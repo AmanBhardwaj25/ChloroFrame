@@ -1,2 +1,53 @@
-referenceonly/*
-design/*
+# macOS metadata
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Xcode user state
+xcuserdata/
+*.xcuserstate
+*.xcscmblueprint
+*.xccheckout
+*.moved-aside
+*.xcactivitylog
+
+# Xcode build products and archives
+DerivedData/
+build/
+Build/
+*.app
+*.dSYM
+*.xcarchive
+*.ipa
+*.resultbundle
+
+# SwiftPM local state
+.build/
+.swiftpm/
+
+# Logs and local runtime output
+log/
+logs/
+*.log
+
+# Local signing material and secrets
+*.cer
+*.p12
+*.pem
+*.key
+*.mobileprovision
+*.provisionprofile
+Local.xcconfig
+*.local.xcconfig
+
+# Editor and tool state
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Private research/reference material kept out of the public repo
+referenceonly/
+design/
+HANDOFF.md
+compariosn.md
