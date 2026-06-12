@@ -1,0 +1,744 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		D40C1BF42FD8F60F009C62E1 /* fullstacksandbox.com.ChloroFrame.Helper in CopyFiles */ = {isa = PBXBuildFile; fileRef = D40C1BE22FD8EF9B009C62E1 /* fullstacksandbox.com.ChloroFrame.Helper */; settings = {ATTRIBUTES = (CodeSignOnCopy, ); }; };
+		D40C1BF82FD8F6D5009C62E1 /* fullstacksandbox.com.ChloroFrame.Helper.plist in CopyFiles */ = {isa = PBXBuildFile; fileRef = D40C1BF72FD8F6D2009C62E1 /* fullstacksandbox.com.ChloroFrame.Helper.plist */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		D4EE2D4B2FD715D700AE587C /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = D4EE2D352FD715D600AE587C /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = D4EE2D3C2FD715D600AE587C;
+			remoteInfo = ChloroFrame;
+		};
+		D4EE2D552FD715D700AE587C /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = D4EE2D352FD715D600AE587C /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = D4EE2D3C2FD715D600AE587C;
+			remoteInfo = ChloroFrame;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		D40C1BE02FD8EF9B009C62E1 /* CopyFiles */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = /usr/share/man/man1/;
+			dstSubfolderSpec = 0;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 1;
+		};
+		D40C1BF32FD8F552009C62E1 /* CopyFiles */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = Contents/Library/LaunchDaemons;
+			dstSubfolderSpec = 1;
+			files = (
+				D40C1BF42FD8F60F009C62E1 /* fullstacksandbox.com.ChloroFrame.Helper in CopyFiles */,
+				D40C1BF82FD8F6D5009C62E1 /* fullstacksandbox.com.ChloroFrame.Helper.plist in CopyFiles */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
+
+/* Begin PBXFileReference section */
+		D40C1BE22FD8EF9B009C62E1 /* fullstacksandbox.com.ChloroFrame.Helper */ = {isa = PBXFileReference; explicitFileType = "compiled.mach-o.executable"; includeInIndex = 0; path = fullstacksandbox.com.ChloroFrame.Helper; sourceTree = BUILT_PRODUCTS_DIR; };
+		D40C1BF72FD8F6D2009C62E1 /* fullstacksandbox.com.ChloroFrame.Helper.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; name = fullstacksandbox.com.ChloroFrame.Helper.plist; path = ChloroFrame/Resources/fullstacksandbox.com.ChloroFrame.Helper.plist; sourceTree = SOURCE_ROOT; };
+		D4EE2D3D2FD715D600AE587C /* ChloroFrame.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = ChloroFrame.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		D4EE2D4A2FD715D700AE587C /* ChloroFrameTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = ChloroFrameTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		D4EE2D542FD715D700AE587C /* ChloroFrameUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = ChloroFrameUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+/* End PBXFileReference section */
+
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		D40C1BEF2FD8F178009C62E1 /* Exceptions for "ChloroFrame" folder in "ChloroFrameHelper" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Common/ChloroFrameHelperProtocol.swift,
+			);
+			target = D40C1BE12FD8EF9B009C62E1 /* ChloroFrameHelper */;
+		};
+		D40C1BF12FD8F1B7009C62E1 /* Exceptions for "ChloroFrame" folder in "ChloroFrame" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = D4EE2D3C2FD715D600AE587C /* ChloroFrame */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
+
+/* Begin PBXFileSystemSynchronizedGroupBuildPhaseMembershipExceptionSet section */
+		D40C1BF62FD8F63E009C62E1 /* Exceptions for "ChloroFrameHelper" folder in "Copy Files" phase from "ChloroFrame" target */ = {
+			isa = PBXFileSystemSynchronizedGroupBuildPhaseMembershipExceptionSet;
+			buildPhase = D40C1BF32FD8F552009C62E1 /* CopyFiles */;
+			membershipExceptions = (
+				Info.plist,
+			);
+		};
+/* End PBXFileSystemSynchronizedGroupBuildPhaseMembershipExceptionSet section */
+
+/* Begin PBXFileSystemSynchronizedRootGroup section */
+		D40C1BE32FD8EF9B009C62E1 /* ChloroFrameHelper */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				D40C1BF62FD8F63E009C62E1 /* Exceptions for "ChloroFrameHelper" folder in "Copy Files" phase from "ChloroFrame" target */,
+			);
+			path = ChloroFrameHelper;
+			sourceTree = "<group>";
+		};
+		D4EE2D3F2FD715D600AE587C /* ChloroFrame */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				D40C1BF12FD8F1B7009C62E1 /* Exceptions for "ChloroFrame" folder in "ChloroFrame" target */,
+				D40C1BEF2FD8F178009C62E1 /* Exceptions for "ChloroFrame" folder in "ChloroFrameHelper" target */,
+			);
+			path = ChloroFrame;
+			sourceTree = "<group>";
+		};
+		D4EE2D4D2FD715D700AE587C /* ChloroFrameTests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = ChloroFrameTests;
+			sourceTree = "<group>";
+		};
+		D4EE2D572FD715D700AE587C /* ChloroFrameUITests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = ChloroFrameUITests;
+			sourceTree = "<group>";
+		};
+/* End PBXFileSystemSynchronizedRootGroup section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		D40C1BDF2FD8EF9B009C62E1 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		D4EE2D3A2FD715D600AE587C /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		D4EE2D472FD715D700AE587C /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		D4EE2D512FD715D700AE587C /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		D4EE2D342FD715D600AE587C = {
+			isa = PBXGroup;
+			children = (
+				D40C1BF72FD8F6D2009C62E1 /* fullstacksandbox.com.ChloroFrame.Helper.plist */,
+				D4EE2D3F2FD715D600AE587C /* ChloroFrame */,
+				D4EE2D4D2FD715D700AE587C /* ChloroFrameTests */,
+				D4EE2D572FD715D700AE587C /* ChloroFrameUITests */,
+				D40C1BE32FD8EF9B009C62E1 /* ChloroFrameHelper */,
+				D4EE2D3E2FD715D600AE587C /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		D4EE2D3E2FD715D600AE587C /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				D4EE2D3D2FD715D600AE587C /* ChloroFrame.app */,
+				D4EE2D4A2FD715D700AE587C /* ChloroFrameTests.xctest */,
+				D4EE2D542FD715D700AE587C /* ChloroFrameUITests.xctest */,
+				D40C1BE22FD8EF9B009C62E1 /* fullstacksandbox.com.ChloroFrame.Helper */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		D40C1BE12FD8EF9B009C62E1 /* ChloroFrameHelper */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = D40C1BE62FD8EF9B009C62E1 /* Build configuration list for PBXNativeTarget "ChloroFrameHelper" */;
+			buildPhases = (
+				D40C1BDE2FD8EF9B009C62E1 /* Sources */,
+				D40C1BDF2FD8EF9B009C62E1 /* Frameworks */,
+				D40C1BE02FD8EF9B009C62E1 /* CopyFiles */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				D40C1BE32FD8EF9B009C62E1 /* ChloroFrameHelper */,
+			);
+			name = ChloroFrameHelper;
+			packageProductDependencies = (
+			);
+			productName = ChloroFrameHelper;
+			productReference = D40C1BE22FD8EF9B009C62E1 /* fullstacksandbox.com.ChloroFrame.Helper */;
+			productType = "com.apple.product-type.tool";
+		};
+		D4EE2D3C2FD715D600AE587C /* ChloroFrame */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = D4EE2D5E2FD715D700AE587C /* Build configuration list for PBXNativeTarget "ChloroFrame" */;
+			buildPhases = (
+				D4EE2D392FD715D600AE587C /* Sources */,
+				D4EE2D3A2FD715D600AE587C /* Frameworks */,
+				D4EE2D3B2FD715D600AE587C /* Resources */,
+				D40C1BF32FD8F552009C62E1 /* CopyFiles */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				D4EE2D3F2FD715D600AE587C /* ChloroFrame */,
+			);
+			name = ChloroFrame;
+			packageProductDependencies = (
+			);
+			productName = ChloroFrame;
+			productReference = D4EE2D3D2FD715D600AE587C /* ChloroFrame.app */;
+			productType = "com.apple.product-type.application";
+		};
+		D4EE2D492FD715D700AE587C /* ChloroFrameTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = D4EE2D612FD715D700AE587C /* Build configuration list for PBXNativeTarget "ChloroFrameTests" */;
+			buildPhases = (
+				D4EE2D462FD715D700AE587C /* Sources */,
+				D4EE2D472FD715D700AE587C /* Frameworks */,
+				D4EE2D482FD715D700AE587C /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				D4EE2D4C2FD715D700AE587C /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				D4EE2D4D2FD715D700AE587C /* ChloroFrameTests */,
+			);
+			name = ChloroFrameTests;
+			packageProductDependencies = (
+			);
+			productName = ChloroFrameTests;
+			productReference = D4EE2D4A2FD715D700AE587C /* ChloroFrameTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+		D4EE2D532FD715D700AE587C /* ChloroFrameUITests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = D4EE2D642FD715D700AE587C /* Build configuration list for PBXNativeTarget "ChloroFrameUITests" */;
+			buildPhases = (
+				D4EE2D502FD715D700AE587C /* Sources */,
+				D4EE2D512FD715D700AE587C /* Frameworks */,
+				D4EE2D522FD715D700AE587C /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				D4EE2D562FD715D700AE587C /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				D4EE2D572FD715D700AE587C /* ChloroFrameUITests */,
+			);
+			name = ChloroFrameUITests;
+			packageProductDependencies = (
+			);
+			productName = ChloroFrameUITests;
+			productReference = D4EE2D542FD715D700AE587C /* ChloroFrameUITests.xctest */;
+			productType = "com.apple.product-type.bundle.ui-testing";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		D4EE2D352FD715D600AE587C /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 2610;
+				LastUpgradeCheck = 2610;
+				TargetAttributes = {
+					D40C1BE12FD8EF9B009C62E1 = {
+						CreatedOnToolsVersion = 26.1;
+					};
+					D4EE2D3C2FD715D600AE587C = {
+						CreatedOnToolsVersion = 26.1;
+					};
+					D4EE2D492FD715D700AE587C = {
+						CreatedOnToolsVersion = 26.1;
+						TestTargetID = D4EE2D3C2FD715D600AE587C;
+					};
+					D4EE2D532FD715D700AE587C = {
+						CreatedOnToolsVersion = 26.1;
+						TestTargetID = D4EE2D3C2FD715D600AE587C;
+					};
+				};
+			};
+			buildConfigurationList = D4EE2D382FD715D600AE587C /* Build configuration list for PBXProject "ChloroFrame" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = D4EE2D342FD715D600AE587C;
+			minimizedProjectReferenceProxies = 1;
+			preferredProjectObjectVersion = 77;
+			productRefGroup = D4EE2D3E2FD715D600AE587C /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				D4EE2D3C2FD715D600AE587C /* ChloroFrame */,
+				D4EE2D492FD715D700AE587C /* ChloroFrameTests */,
+				D4EE2D532FD715D700AE587C /* ChloroFrameUITests */,
+				D40C1BE12FD8EF9B009C62E1 /* ChloroFrameHelper */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		D4EE2D3B2FD715D600AE587C /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		D4EE2D482FD715D700AE587C /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		D4EE2D522FD715D700AE587C /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		D40C1BDE2FD8EF9B009C62E1 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		D4EE2D392FD715D600AE587C /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		D4EE2D462FD715D700AE587C /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		D4EE2D502FD715D700AE587C /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		D4EE2D4C2FD715D700AE587C /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = D4EE2D3C2FD715D600AE587C /* ChloroFrame */;
+			targetProxy = D4EE2D4B2FD715D700AE587C /* PBXContainerItemProxy */;
+		};
+		D4EE2D562FD715D700AE587C /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = D4EE2D3C2FD715D600AE587C /* ChloroFrame */;
+			targetProxy = D4EE2D552FD715D700AE587C /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		D40C1BE72FD8EF9B009C62E1 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CREATE_INFOPLIST_SECTION_IN_BINARY = YES;
+				DEVELOPMENT_TEAM = UDZPCZ26XS;
+				ENABLE_HARDENED_RUNTIME = YES;
+				INFOPLIST_FILE = ChloroFrameHelper/Info.plist;
+				PRODUCT_BUNDLE_IDENTIFIER = fullstacksandbox.com.ChloroFrame.Helper;
+				PRODUCT_NAME = fullstacksandbox.com.ChloroFrame.Helper;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		D40C1BE82FD8EF9B009C62E1 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CREATE_INFOPLIST_SECTION_IN_BINARY = YES;
+				DEVELOPMENT_TEAM = UDZPCZ26XS;
+				ENABLE_HARDENED_RUNTIME = YES;
+				INFOPLIST_FILE = ChloroFrameHelper/Info.plist;
+				PRODUCT_BUNDLE_IDENTIFIER = fullstacksandbox.com.ChloroFrame.Helper;
+				PRODUCT_NAME = fullstacksandbox.com.ChloroFrame.Helper;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
+		D4EE2D5C2FD715D700AE587C /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				DEVELOPMENT_TEAM = UDZPCZ26XS;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"DEBUG=1",
+					"$(inherited)",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
+				MACOSX_DEPLOYMENT_TARGET = 26.1;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				SDKROOT = macosx;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG $(inherited)";
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+			};
+			name = Debug;
+		};
+		D4EE2D5D2FD715D700AE587C /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				DEVELOPMENT_TEAM = UDZPCZ26XS;
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
+				MACOSX_DEPLOYMENT_TARGET = 26.1;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				SDKROOT = macosx;
+				SWIFT_COMPILATION_MODE = wholemodule;
+			};
+			name = Release;
+		};
+		D4EE2D5F2FD715D700AE587C /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = ChloroFrame/ChloroFrame.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = UDZPCZ26XS;
+				ENABLE_APP_SANDBOX = NO;
+				ENABLE_HARDENED_RUNTIME = YES;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				HEADER_SEARCH_PATHS = "$(PROJECT_DIR)/ChloroFrame/Vendor/opus/include";
+				INFOPLIST_FILE = ChloroFrame/Info.plist;
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.games";
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				LIBRARY_SEARCH_PATHS = "$(PROJECT_DIR)/ChloroFrame/Vendor/opus/lib";
+				MARKETING_VERSION = 1.0;
+				OTHER_LDFLAGS = "-lopus";
+				PRODUCT_BUNDLE_IDENTIFIER = fullstacksandbox.com.ChloroFrame;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				REGISTER_APP_GROUPS = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_OBJC_BRIDGING_HEADER = "ChloroFrame/ChloroFrame-Bridging-Header.h";
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		D4EE2D602FD715D700AE587C /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = ChloroFrame/ChloroFrame.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = UDZPCZ26XS;
+				ENABLE_APP_SANDBOX = NO;
+				ENABLE_HARDENED_RUNTIME = YES;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				HEADER_SEARCH_PATHS = "$(PROJECT_DIR)/ChloroFrame/Vendor/opus/include";
+				INFOPLIST_FILE = ChloroFrame/Info.plist;
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.games";
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				LIBRARY_SEARCH_PATHS = "$(PROJECT_DIR)/ChloroFrame/Vendor/opus/lib";
+				MARKETING_VERSION = 1.0;
+				OTHER_LDFLAGS = "-lopus";
+				PRODUCT_BUNDLE_IDENTIFIER = fullstacksandbox.com.ChloroFrame;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				REGISTER_APP_GROUPS = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_OBJC_BRIDGING_HEADER = "ChloroFrame/ChloroFrame-Bridging-Header.h";
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
+		D4EE2D622FD715D700AE587C /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = UDZPCZ26XS;
+				GENERATE_INFOPLIST_FILE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 26.1;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = fullstacksandbox.com.ChloroFrameTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				STRING_CATALOG_GENERATE_SYMBOLS = NO;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/ChloroFrame.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/ChloroFrame";
+			};
+			name = Debug;
+		};
+		D4EE2D632FD715D700AE587C /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = UDZPCZ26XS;
+				GENERATE_INFOPLIST_FILE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 26.1;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = fullstacksandbox.com.ChloroFrameTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				STRING_CATALOG_GENERATE_SYMBOLS = NO;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/ChloroFrame.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/ChloroFrame";
+			};
+			name = Release;
+		};
+		D4EE2D652FD715D700AE587C /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = UDZPCZ26XS;
+				GENERATE_INFOPLIST_FILE = YES;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = fullstacksandbox.com.ChloroFrameUITests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				STRING_CATALOG_GENERATE_SYMBOLS = NO;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TEST_TARGET_NAME = ChloroFrame;
+			};
+			name = Debug;
+		};
+		D4EE2D662FD715D700AE587C /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = UDZPCZ26XS;
+				GENERATE_INFOPLIST_FILE = YES;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = fullstacksandbox.com.ChloroFrameUITests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				STRING_CATALOG_GENERATE_SYMBOLS = NO;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TEST_TARGET_NAME = ChloroFrame;
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		D40C1BE62FD8EF9B009C62E1 /* Build configuration list for PBXNativeTarget "ChloroFrameHelper" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				D40C1BE72FD8EF9B009C62E1 /* Debug */,
+				D40C1BE82FD8EF9B009C62E1 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		D4EE2D382FD715D600AE587C /* Build configuration list for PBXProject "ChloroFrame" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				D4EE2D5C2FD715D700AE587C /* Debug */,
+				D4EE2D5D2FD715D700AE587C /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		D4EE2D5E2FD715D700AE587C /* Build configuration list for PBXNativeTarget "ChloroFrame" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				D4EE2D5F2FD715D700AE587C /* Debug */,
+				D4EE2D602FD715D700AE587C /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		D4EE2D612FD715D700AE587C /* Build configuration list for PBXNativeTarget "ChloroFrameTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				D4EE2D622FD715D700AE587C /* Debug */,
+				D4EE2D632FD715D700AE587C /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		D4EE2D642FD715D700AE587C /* Build configuration list for PBXNativeTarget "ChloroFrameUITests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				D4EE2D652FD715D700AE587C /* Debug */,
+				D4EE2D662FD715D700AE587C /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = D4EE2D352FD715D600AE587C /* Project object */;
+}

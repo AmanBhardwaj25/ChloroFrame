@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>SMPrivilegedExecutables</key>
+	<dict>
+		<key>fullstacksandbox.com.ChloroFrame.Helper</key>
+		<string>anchor apple generic and identifier "fullstacksandbox.com.ChloroFrame.Helper" and certificate leaf[subject.OU] = "UDZPCZ26XS"</string>
+	</dict>
+</dict>
+</plist>

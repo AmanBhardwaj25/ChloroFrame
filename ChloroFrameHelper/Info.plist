@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleIdentifier</key>
+    <string>fullstacksandbox.com.ChloroFrame.Helper</string>
+
+    <key>CFBundleName</key>
+    <string>ChloroFrameHelper</string>
+
+    <key>CFBundleVersion</key>
+    <string>1</string>
+
+    <key>CFBundleShortVersionString</key>
+    <string>1.0</string>
+
+    <!-- Declares which apps are allowed to bless/communicate with this helper.
+         Requirement: same team ID (UDZPCZ26XS) + main app bundle ID.           -->
+    <key>SMAuthorizedClients</key>
+    <array>
+        <string>anchor apple generic and identifier &quot;fullstacksandbox.com.ChloroFrame&quot; and certificate leaf[subject.OU] = &quot;UDZPCZ26XS&quot;</string>
+    </array>
+</dict>
+</plist>
