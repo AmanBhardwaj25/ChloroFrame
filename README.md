@@ -160,3 +160,9 @@ Project code is released under the MIT License. See `LICENSE`.
 Vendored Opus headers and the static `libopus.a` in `ChloroFrame/Vendor/opus`
 remain under the upstream Opus license. If you distribute binaries, include the
 Opus license notice with your distribution.
+
+The Reed-Solomon FEC code in `ChloroFrame/Network/FEC/` (both the C
+implementation and its Swift translation) is derived from the scalar
+(OBLAS_TINY) path of [nanors](https://github.com/sleepybishop/nanors) by
+Joseph Calderon, used under the MIT License. The full license notice is
+included in `nanors_impl.c`.

@@ -15,6 +15,7 @@ xcuserdata/
 DerivedData/
 build/
 Build/
+release/
 *.app
 *.dSYM
 *.xcarchive
@@ -29,6 +30,9 @@ Build/
 log/
 logs/
 *.log
+
+# Local release automation
+scripts/
 
 # Local signing material and secrets
 *.cer

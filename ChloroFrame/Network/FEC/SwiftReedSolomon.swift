@@ -3,7 +3,9 @@
 //  ChloroFrame
 //
 //  Pure Swift GF(2^8) Reed-Solomon, polynomial 285.
-//  Direct translation of the OBLAS_TINY (scalar) path in nanors by Tomas Härdin.
+//  Direct translation of the OBLAS_TINY (scalar) path in nanors by
+//  Joseph Calderon (https://github.com/sleepybishop/nanors), MIT License.
+//  See nanors_impl.c for the full license notice.
 //  Used when useSwiftFEC = true in Settings.
 
 import Foundation
