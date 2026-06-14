@@ -66,24 +66,29 @@ final class AudioEngine: @unchecked Sendable {
     // setup (playback began nearly drained on the first pull).
     private static let targetPrimingFrames: Int    = 2880
 
-    // ── Adaptive jitter buffer ───────────────────────────────────────────────
-    // The target occupancy is not fixed: it grows when underruns occur (the link is jittery
-    // and we need more cushion to bridge gaps) and decays slowly when calm (reclaim latency).
-    // The drift servo holds occupancy near this moving target; the ring's latency clamp tracks
-    // a fixed margin above it. Grow-fast / decay-slow, mirroring the video buffer policy.
-    private static let targetFloorFrames:  Int    = 2400   // 50 ms  — min latency when calm
-    private static let targetCeilFrames:   Int    = 4560   // 95 ms  — max cushion under jitter
+    // ── Adaptive jitter buffer (drawdown-sized, fast-grow / slow-floored-shrink) ──────
+    // The target occupancy is not fixed. It GROWS fast and reactively when an underrun occurs
+    // (the link is jittery and we ran too thin), and SHRINKS only slowly, and only toward a
+    // floor the buffer has demonstrably not needed. The floor is sized to the DRAWDOWN — how
+    // far occupancy dips below the target — plus a margin and a conservative pad, NOT to the
+    // raw low-water level (lowering the target lowers the future low-water by the same amount,
+    // so chasing the level walks off a cliff). Grow fast where being wrong is costly (underrun
+    // = click); shrink slow where being wrong is cheap (a few ms of latency).
+    private static let targetFloorFrames:  Int    = 2400   // 50 ms  — hard min latency
+    private static let targetCeilFrames:   Int    = 4560   // 95 ms  — hard max cushion
     private static let clampMarginFrames:  Int    = 1440   // 30 ms  — clamp ceiling above target
     // → max playback latency = ceil + margin = 125 ms. Worst-case lip-sync offset ≈ 125 − ~40
     //   (video age) = ~85 ms audio-behind, still under the ITU-R BT.1359 ~125 ms lag detection
-    //   threshold and G.114's 150 ms "transparent" limit. The extra headroom over the old 100 ms
-    //   cap lets the buffer absorb more jitter (fewer underruns); residual gaps are concealed by
-    //   the waveform-repeat in AudioRingBuffer. Big stalls remain an AWDL problem.
-    private static let adaptGrowFrames:    Int    = 480    // +10 ms per underrun episode
+    //   threshold and G.114's 150 ms "transparent" limit.
+    private static let adaptGrowFrames:    Int    = 480    // +10 ms per underrun episode (fast attack)
     private static let adaptGrowMinIntervalNanos: UInt64 = 250_000_000     // ≤1 growth / 250 ms
-    private static let adaptDecayFrames:   Int    = 48     // -1 ms per decay tick
-    private static let adaptDecayIntervalNanos:   UInt64 = 1_000_000_000   // decay 1 ms/s (slow reclaim)
-    private static let adaptDecayQuietNanos:      UInt64 = 12_000_000_000  // hold ≥12 s after an underrun
+    private static let adaptMarginFrames:  Int    = 480    // 10 ms  — safety margin in `needed`
+    private static let adaptPadFrames:     Int    = 240    //  5 ms  — conservative pad above need
+    private static let adaptShrinkFrames:  Int    = 96     //  2 ms  — slow-release step
+    private static let adaptShrinkIntervalNanos:  UInt64 = 1_000_000_000   // ≤1 shrink step / 1 s
+    // Low-water envelope: snaps down to any new occupancy dip, relaxes up slowly so old dips
+    // age out of the ~8 s window (≈ 1/alpha packets at ~200 pkt/s).
+    private static let adaptLowWaterAlpha: Double = 0.0006
     // Initial clamp ceiling = initial target + margin (60 + 30 = 90 ms).
     private static let initialMaxLatencyFrames: Int = targetPrimingFrames + clampMarginFrames
 
@@ -122,10 +127,10 @@ final class AudioEngine: @unchecked Sendable {
 
     // Adaptive jitter buffer state (audioQueue only).
     private var adaptiveTargetFrames: Double = Double(targetPrimingFrames)  // starts at 60 ms
+    private var lowWaterFrames:       Double = Double(targetPrimingFrames)  // windowed min occupancy
     private var lastUnderrunCount:    Int    = 0
-    private var lastUnderrunNanos:    UInt64 = 0
     private var lastAdaptGrowNanos:   UInt64 = 0
-    private var lastAdaptDecayNanos:  UInt64 = 0
+    private var lastAdaptShrinkNanos: UInt64 = 0
 
     // Diagnostics — track previous packet for delta logging (first 20 packets).
     private var diagPrevRtp:     UInt32? = nil
@@ -227,10 +232,10 @@ final class AudioEngine: @unchecked Sendable {
         driftInserts       = 0
         enginePrewarmNanos = 0
         adaptiveTargetFrames = Double(Self.targetPrimingFrames)
+        lowWaterFrames     = Double(Self.targetPrimingFrames)
         lastUnderrunCount  = 0
-        lastUnderrunNanos  = 0
         lastAdaptGrowNanos = 0
-        lastAdaptDecayNanos = 0
+        lastAdaptShrinkNanos = 0
         ringBuffer.setMaxLatencyFrames(Self.initialMaxLatencyFrames)
         state = .stopped
         alog.info("engine stopped")
@@ -302,27 +307,39 @@ final class AudioEngine: @unchecked Sendable {
             if state == .running {
                 let now = clock_gettime_nsec_np(CLOCK_MONOTONIC_RAW)
 
-                // Adaptive jitter buffer: grow the target on underruns (we ran too thin to
-                // bridge a gap), decay it slowly when the link is calm. The clamp ceiling
-                // tracks a fixed margin above the target. We observe underruns reactively
-                // here (the render callback counts them; we see the bump on the next packet).
+                // Track the windowed low-water mark of actual occupancy: snap down to any new
+                // dip, relax up slowly so old dips age out of the window. This gives the
+                // drawdown (how deep gaps pull the buffer) without having to risk-probe smaller
+                // sizes — we observe the dip while sitting safely at the current target.
+                let occ = Double(ringBuffer.availableFrames)
+                if occ < lowWaterFrames {
+                    lowWaterFrames = occ
+                } else {
+                    lowWaterFrames += (occ - lowWaterFrames) * Self.adaptLowWaterAlpha
+                }
+
+                // Adaptive jitter buffer. GROW fast on underrun (ran too thin); otherwise SHRINK
+                // slowly toward a floor sized to the demonstrated need, never below it. `needed`
+                // is the dip depth + margin, so the buffer covers the worst observed gap; we
+                // creep down by one small step per second and never past `needed + pad`.
                 let underNow = ringBuffer.underrunCount
                 if underNow > lastUnderrunCount {
                     lastUnderrunCount = underNow
-                    lastUnderrunNanos = now
                     if now &- lastAdaptGrowNanos >= Self.adaptGrowMinIntervalNanos {
                         adaptiveTargetFrames = min(Double(Self.targetCeilFrames),
                                                    adaptiveTargetFrames + Double(Self.adaptGrowFrames))
                         lastAdaptGrowNanos = now
                         applyAdaptiveClamp()
                     }
-                } else if now &- lastUnderrunNanos >= Self.adaptDecayQuietNanos,
-                          now &- lastAdaptDecayNanos >= Self.adaptDecayIntervalNanos,
-                          adaptiveTargetFrames > Double(Self.targetFloorFrames) {
-                    adaptiveTargetFrames = max(Double(Self.targetFloorFrames),
-                                               adaptiveTargetFrames - Double(Self.adaptDecayFrames))
-                    lastAdaptDecayNanos = now
-                    applyAdaptiveClamp()
+                } else if now &- lastAdaptShrinkNanos >= Self.adaptShrinkIntervalNanos {
+                    lastAdaptShrinkNanos = now
+                    let drawdown  = max(0, adaptiveTargetFrames - lowWaterFrames)   // dip depth
+                    let needed    = drawdown + Double(Self.adaptMarginFrames)
+                    let floorT    = max(needed + Double(Self.adaptPadFrames), Double(Self.targetFloorFrames))
+                    if adaptiveTargetFrames > floorT {
+                        adaptiveTargetFrames = max(floorT, adaptiveTargetFrames - Double(Self.adaptShrinkFrames))
+                        applyAdaptiveClamp()
+                    }
                 }
 
                 // Drift servo: hold ring occupancy near the (adaptive) target, correcting the
