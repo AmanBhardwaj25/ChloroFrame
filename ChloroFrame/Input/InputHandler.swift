@@ -25,13 +25,13 @@ final class InputHandler {
     private weak var transport: StreamTransport?
     private var packetsSent = 0
 
-    // Mouse delta accumulator. CGFloat preserves sub-pixel fractions between timer flushes.
-    // A DispatchSourceTimer drains the accumulator at 8 ms (125 Hz) on the main queue,
-    // matching the cadence that game servers expect and avoiding per-event ENet floods.
-    // All access is on the main thread (AppKit events + main-queue timer = no locking needed).
+    // Mouse delta accumulator. CGFloat carries the sub-pixel remainder between events so slow
+    // motion is not lost to integer truncation. Deltas are flushed immediately on each AppKit
+    // mouse event (AppKit already coalesces rapid moves), so no fixed timer delay is added
+    // before the packet goes out. All access is on the main thread (AppKit events on the main
+    // run loop), so no locking is needed.
     private var pendingDX: CGFloat = 0
     private var pendingDY: CGFloat = 0
-    private var mouseFlushTimer: DispatchSourceTimer?
 
     // Tracks currently-held keys and buttons so releaseAll() can send up-events on focus loss.
     private var heldKeys    = Set<Int>()    // Win32 VK codes
@@ -39,21 +39,8 @@ final class InputHandler {
 
     init(transport: StreamTransport) {
         self.transport = transport
-        let timer = DispatchSource.makeTimerSource(queue: .main)
-        timer.schedule(deadline: .now() + .milliseconds(8), repeating: .milliseconds(8),
-                       leeway: .milliseconds(1))
-        // Timer fires on .main queue; assumeIsolated tells the compiler we're already on the
-        // main actor so calling @MainActor methods is safe without an async hop.
-        timer.setEventHandler { [weak self] in
-            guard let self else { return }
-            MainActor.assumeIsolated { self.flushMouseMove() }
-        }
-        timer.resume()
-        mouseFlushTimer = timer
         AppLogger.shared.log("InputHandler init", "input", "init")
     }
-
-    deinit { mouseFlushTimer?.cancel() }
 
     /// Release all held keys and mouse buttons. Call on focus loss, disconnect, or stream stop
     /// so the remote OS doesn't see stuck keys or buttons.
@@ -152,11 +139,14 @@ final class InputHandler {
         let (dx, dy) = rawDelta(from: event)
         pendingDX += dx
         pendingDY += dy
-        // Actual send happens in flushMouseMove(), called by the 8 ms timer on the main queue.
+        // Send right away. AppKit has already coalesced rapid moves into this event, so there
+        // is no flood, and crucially no fixed timer delay is added before the packet leaves
+        // (matches moonlight-qt, which sends each motion event immediately). The accumulator
+        // only carries a sub-pixel remainder to the next event.
+        flushMouseMove()
     }
 
-    // Called by the 8 ms DispatchSourceTimer on the main queue.
-    // Truncates the integer portion, keeps the fractional remainder for the next flush,
+    // Truncates the integer portion, keeps the fractional remainder for the next event,
     // and splits deltas larger than Int16 into multiple packets to avoid clamping.
     private func flushMouseMove() {
         let ix = Int(pendingDX)   // truncate toward zero; fraction stays in accumulator
@@ -224,10 +214,15 @@ final class InputHandler {
 
     func handleScrollWheel(_ event: NSEvent) {
         // Scale: one standard detent = 120 for Win32 WHEEL_DELTA.
-        // scrollingDeltaY/X already reflect the user's natural/traditional scroll preference.
         let scale: CGFloat = event.hasPreciseScrollingDeltas ? 3 : 120
-        let amountY = Int16(clamping: Int(-event.scrollingDeltaY * scale))
-        let amountX = Int16(clamping: Int(-event.scrollingDeltaX * scale))
+        // Direction: Y un-negated (macOS scrollingDeltaY already encodes the Mac's scroll
+        // setting and maps straight onto WHEEL_DELTA; matches moonlight, the old negation
+        // flipped it); X negated. Clamp each event to ±one detent so a fast flick or macOS
+        // scroll acceleration can't fire a wild burst the host scrolls through late (which
+        // read as too-fast-and-laggy). This bounds the speed while preserving inertial/momentum
+        // scrolling (the flick-to-coast); moonlight-qt clamps macOS deltas the same way.
+        let amountY = Int16(clamping: Int(min(120, max(-120, event.scrollingDeltaY * scale))))
+        let amountX = Int16(clamping: Int(min(120, max(-120, -event.scrollingDeltaX * scale))))
 
         // NV_SCROLL_PACKET    (0x0A)       — vertical:   BE32(10) | LE32(0x0A) | scrollAmt BE16 ×2 | zero(2)
         // SS_HSCROLL_PACKET   (0x55000001) — horizontal: BE32(6)  | LE32(0x55000001) | scrollAmount BE16 (one field)
