@@ -91,14 +91,17 @@ Implemented, but still alpha:
   HDR.
 - Metal rendering with NV12/P010 texture paths and display-link frame pacing.
 - RTP video assembly with FEC recovery.
-- Opus audio decode through vendored libopus and CoreAudio pull playback.
+- Opus audio decode through vendored libopus and CoreAudio pull playback, with an
+  adaptive jitter buffer, clock-drift correction, and waveform-repeat underrun
+  concealment.
 - Keyboard and mouse input over the Apollo control channel.
 
 Known gaps:
 
 - AWDL suppression is broken and should be treated as a TODO. Do not rely on it.
-- Audio resilience work is still open: packet reorder, packet-loss concealment,
-  adaptive jitter buffering, and host/client clock drift correction.
+- Audio output-device and config-change handling (AVAudioEngine reconfiguration)
+  and LAN audio encryption are not implemented. Rare multi-second audio-only
+  delivery stalls remain, tied to the AWDL gap above.
 - Gamepad, touch, and pen input are not implemented yet.
 - Bonjour/mDNS host discovery is still a placeholder.
 
