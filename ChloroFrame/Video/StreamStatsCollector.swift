@@ -51,6 +51,19 @@ struct StreamStats {
     var lateDroppedPerSec: Double = 0     // frames dropped at render because a newer frame was also due
     var renderQueueDepth: Double = 0      // avg queue occupancy over the snapshot window
     var renderQueueHighWatermark: Int = 0 // peak queue depth over the snapshot window
+
+    // Audio-side metrics (sampled from AudioEngine.stats on the snapshot tick)
+    var audioState: String = "—"      // stopped / priming / running
+    var audioBufferedMs: Double = 0   // current ring-buffer occupancy in ms
+    var audioUnderruns: Int = 0       // cumulative render-callback starvations (zero-fill)
+    var audioOverruns: Int = 0        // cumulative ring overruns (oldest audio skipped)
+    var audioDecoded: Int = 0         // cumulative Opus packets decoded
+    var audioDriftDrops: Int = 0      // packets dropped by the drift servo (buffer too full)
+    var audioDriftInserts: Int = 0    // packets duplicated by the drift servo (buffer too empty)
+    var audioLoss: Int = 0            // forward sequence gaps (apparent packet loss)
+    var audioReorder: Int = 0         // backwards-seq packets we discarded (reorder/dup)
+    var audioLatencyClampMs: Double = 0 // cumulative ms skipped by the max-latency clamp (bursts)
+    var audioTargetMs: Double = 0     // current adaptive jitter-buffer target latency
 }
 
 // MARK: - Collector
@@ -80,6 +93,15 @@ final class StreamStatsCollector {
     func setReceivedHdr(_ hdr: Bool) {
         DispatchQueue.main.async { [weak self] in self?.receivedHdr = hdr }
     }
+
+    // Pulls a fresh AudioEngineStats snapshot on each 1-Hz tick. Set by StreamTransport
+    // once the AudioEngine exists; nil before that and after teardown. Invoked on the
+    // main thread inside takeSnapshot — AudioEngine.stats does a short audioQueue.sync,
+    // which never blocks on main, so this is deadlock-free.
+    var audioStatsProvider: (() -> AudioEngineStats?)?
+
+    // Pulls the audio receiver's loss/reorder counters on each tick. Set by StreamTransport.
+    var audioReceiverStatsProvider: (() -> (loss: Int, reorder: Int)?)?
 
     // ── Lock-protected accumulator ────────────────────────────────────────
 
@@ -133,6 +155,12 @@ final class StreamStatsCollector {
 
     func start() {
         lastSnapshotTime = CACurrentMediaTime()
+        SessionLog.shared.begin(header:
+            "session start  req=\(requestedWidth)x\(requestedHeight)@\(requestedFps) "
+            + "\(requestedBitrateKbps / 1000)Mbps codec=\(requestedCodec) hdr=\(requestedHdr)\n"
+            + "columns: VIDEO fps · bitrate · loss% · jitter · decode(avg/max) · "
+            + "draw(avg/p99/max) · frameAge · queue(avg/peak) · overwrites/s · lateDrops/s  ||  "
+            + "AUDIO state · buffered · underruns · overruns · drift(drop/ins) · decoded")
         // Add to main run loop so the callback always fires on the main thread,
         // regardless of which thread start() is called from.
         let t = Timer(timeInterval: 1.0, repeats: true) { [weak self] _ in
@@ -145,6 +173,7 @@ final class StreamStatsCollector {
     func stop() {
         timer?.invalidate()
         timer = nil
+        SessionLog.shared.end()
     }
 
     // MARK: - Record (any thread)
@@ -287,12 +316,30 @@ final class StreamStatsCollector {
             drawIntervalMax = sorted[sorted.count - 1]
         }
 
+        let audio = audioStatsProvider?()
+        let audioRx = audioReceiverStatsProvider?()
+
         // One line per second while streaming when verbose logging is enabled
         // (defaults write ... verboseStreamLogs -bool YES) — this is the before/after
         // artifact for pacing work. With verbose off, no string is even built.
         if draws > 0 {
             StreamLog.log("[ChloroFrame][video-stats] fps=\(String(format: "%.1f", fps)) draw=\(String(format: "%.2f", drawInterval))ms p99=\(String(format: "%.2f", drawIntervalP99))ms max=\(String(format: "%.2f", drawIntervalMax))ms repeats=\(String(format: "%.1f", repeatsPerSec))/s overwrites=\(String(format: "%.1f", overwrittenPerSec))/s lateDrops=\(String(format: "%.1f", lateDroppedPerSec))/s qAvg=\(String(format: "%.2f", queueDepthAvg)) qPeak=\(snap.snapQueueHighWatermark) age=\(String(format: "%.1f", frameAge))ms")
         }
+
+        // Always-on session log line (1 Hz, async file I/O off the hot path). This is the
+        // artifact we review after a run.
+        let vLine = String(format:
+            "VIDEO fps=%.1f br=%.1fMbps loss=%.1f%% jit=%.1fms dec=%.1f/%.1fms "
+            + "draw=%.2f/%.2f/%.2fms age=%.1fms q=%.1f/%ld over=%.1f/s late=%.1f/s",
+            fps, bitrateMbps, lossPct, snap.jitterEst / 90.0, decodeAvg, snap.decodeMaxMs,
+            drawInterval, drawIntervalP99, drawIntervalMax, frameAge,
+            queueDepthAvg, snap.snapQueueHighWatermark, overwrittenPerSec, lateDroppedPerSec)
+        let aLine = "AUDIO \(audio?.state.label ?? "—") " + String(format:
+            "buf=%.0fms tgt=%.0fms under=%ld over=%ld drift=%ld/%ld clamp=%.0fms dec=%ld loss=%ld reorder=%ld",
+            audio?.bufferedMs ?? 0, audio?.targetMs ?? 0, audio?.underrunCount ?? 0, audio?.overrunCount ?? 0,
+            audio?.driftDrops ?? 0, audio?.driftInserts ?? 0, audio?.latencyClampMs ?? 0,
+            audio?.decodeCount ?? 0, audioRx?.loss ?? 0, audioRx?.reorder ?? 0)
+        SessionLog.shared.line(vLine + "  ||  " + aLine)
 
         current = StreamStats(
             reqWidth: requestedWidth,
@@ -324,7 +371,18 @@ final class StreamStatsCollector {
             overwrittenPerSec: overwrittenPerSec,
             lateDroppedPerSec: lateDroppedPerSec,
             renderQueueDepth: queueDepthAvg,
-            renderQueueHighWatermark: snap.snapQueueHighWatermark
+            renderQueueHighWatermark: snap.snapQueueHighWatermark,
+            audioState:        audio?.state.label ?? "—",
+            audioBufferedMs:   audio?.bufferedMs ?? 0,
+            audioUnderruns:    audio?.underrunCount ?? 0,
+            audioOverruns:     audio?.overrunCount ?? 0,
+            audioDecoded:      audio?.decodeCount ?? 0,
+            audioDriftDrops:   audio?.driftDrops ?? 0,
+            audioDriftInserts: audio?.driftInserts ?? 0,
+            audioLoss:         audioRx?.loss ?? 0,
+            audioReorder:      audioRx?.reorder ?? 0,
+            audioLatencyClampMs: audio?.latencyClampMs ?? 0,
+            audioTargetMs:     audio?.targetMs ?? 0
         )
     }
 }

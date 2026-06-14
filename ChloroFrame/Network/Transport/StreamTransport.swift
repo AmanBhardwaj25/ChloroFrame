@@ -130,9 +130,11 @@ final class StreamTransport {
         let engine = AudioEngine()
         try engine.start()
         audioEngine = engine
+        stats.audioStatsProvider = { [weak engine] in engine?.stats }
 
         let ar = RTPAudioReceiver()
         ar.onPacket = { [weak engine] packet in engine?.push(packet: packet) }
+        stats.audioReceiverStatsProvider = { [weak ar] in ar.map { ($0.apparentLoss, $0.reorderDiscarded) } }
         try await ar.start(host: serverHost, serverPort: audioPort, localPort: audioLocalPort, pingPayload: audioPing)
         audioReceiver = ar
 
@@ -161,6 +163,8 @@ final class StreamTransport {
         }
         AWDLSuppressor.shared.restore()
         stats.stop()
+        stats.audioStatsProvider = nil
+        stats.audioReceiverStatsProvider = nil
         videoReceiver?.stop();          videoReceiver      = nil
         audioReceiver?.stop();          audioReceiver      = nil
         audioEngine?.stop();            audioEngine        = nil

@@ -27,6 +27,8 @@ struct StreamStatsHUD: View {
             Divider().background(Color.white.opacity(0.15)).padding(.vertical, 6)
             renderSection(s)
             Divider().background(Color.white.opacity(0.15)).padding(.vertical, 6)
+            audioSection(s)
+            Divider().background(Color.white.opacity(0.15)).padding(.vertical, 6)
             wirelessSection
         }
         .padding(14)
@@ -103,6 +105,19 @@ struct StreamStatsHUD: View {
             row("Overwrites",    String(format: "%.1f /s", s.overwrittenPerSec))
             row("Late drops",    String(format: "%.1f /s", s.lateDroppedPerSec))
             row("Queue depth",   String(format: "%.2f avg  %d peak", s.renderQueueDepth, s.renderQueueHighWatermark))
+        }
+    }
+
+    private func audioSection(_ s: StreamStats) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            label("AUDIO")
+            row("State",    s.audioState)
+            row("Buffered", String(format: "%.0f ms  (tgt %.0f)", s.audioBufferedMs, s.audioTargetMs))
+            row("Glitches", "\(s.audioUnderruns) under  ·  \(s.audioOverruns) over")
+            row("Drift",    "\(s.audioDriftDrops) drop  ·  \(s.audioDriftInserts) ins")
+            row("Lat clamp", String(format: "%.0f ms skipped", s.audioLatencyClampMs))
+            row("Loss/reord","\(s.audioLoss) loss  ·  \(s.audioReorder) reord")
+            row("Decoded",  "\(s.audioDecoded)")
         }
     }
 

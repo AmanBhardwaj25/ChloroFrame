@@ -13,6 +13,7 @@
 
 import Foundation
 import Network
+import Synchronization
 import os
 
 private let rlog = Logger(subsystem: "com.chloroframe", category: "audio")
@@ -28,6 +29,19 @@ final class RTPAudioReceiver {
 
     private var lastSeqSeen:       UInt16? = nil
     private var firstPacketLogged: Bool    = false
+
+    // Diagnostics: distinguish true loss from reordering. Both written only on the NW
+    // receive queue (single writer); Atomic for cross-thread reads at snapshot time.
+    //   apparentLoss      — forward sequence gaps (seq jumped by >1): packets that never
+    //                       arrived *in order*. Reordering inflates this too (see below).
+    //   reorderDiscarded  — packets we drop because seq went backwards (delta <= 0): late
+    //                       or duplicate arrivals. A reordered packet shows up as BOTH a
+    //                       forward gap (when its successor arrives first) AND a discard,
+    //                       so apparentLoss ≈ reorderDiscarded means reordering, not loss.
+    private let _apparentLoss     = Atomic<Int>(0)
+    private let _reorderDiscarded = Atomic<Int>(0)
+    var apparentLoss:     Int { _apparentLoss.load(ordering: .relaxed) }
+    var reorderDiscarded: Int { _reorderDiscarded.load(ordering: .relaxed) }
 
     // MARK: - Lifecycle
 
@@ -82,6 +96,8 @@ final class RTPAudioReceiver {
         pingTask = nil
         lastSeqSeen       = nil
         firstPacketLogged = false
+        _apparentLoss.store(0, ordering: .relaxed)
+        _reorderDiscarded.store(0, ordering: .relaxed)
     }
 
     // MARK: - Receive loop
@@ -109,9 +125,20 @@ final class RTPAudioReceiver {
 
         let seq = UInt16(data[2]) << 8 | UInt16(data[3])
 
-        // Drop duplicates. Use signed delta (RFC 3550 §A.1) so wrap-around is handled:
-        // a packet is a duplicate or backwards retransmission if delta <= 0.
-        if let last = lastSeqSeen, Int16(bitPattern: seq &- last) <= 0 { return }
+        // Drop duplicates/reordered. Use signed delta (RFC 3550 §A.1) so wrap-around is
+        // handled: a packet is a duplicate or backwards retransmission if delta <= 0.
+        if let last = lastSeqSeen {
+            let delta = Int16(bitPattern: seq &- last)
+            if delta <= 0 {
+                // Late or duplicate arrival — currently discarded.
+                _reorderDiscarded.store(_reorderDiscarded.load(ordering: .relaxed) &+ 1, ordering: .relaxed)
+                return
+            }
+            if delta > 1 {
+                // Forward gap: (delta - 1) sequence numbers skipped (PT 97 seq is contiguous).
+                _apparentLoss.store(_apparentLoss.load(ordering: .relaxed) &+ Int(delta - 1), ordering: .relaxed)
+            }
+        }
         lastSeqSeen = seq
 
         let rtp  = UInt32(data[4]) << 24 | UInt32(data[5]) << 16 | UInt32(data[6]) << 8 | UInt32(data[7])

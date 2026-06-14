@@ -50,8 +50,14 @@ Local.xcconfig
 *.swp
 *.swo
 
-# Private research/reference material kept out of the public repo
+# Private research/reference material
 referenceonly/
 design/
 HANDOFF.md
+compariosn.md
+
+# Private working notes
+status.md
+todo.md
+comparison.md
 compariosn.md
