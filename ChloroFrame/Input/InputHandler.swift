@@ -42,6 +42,28 @@ final class InputHandler {
     // next session. Empty by default ⇒ behaviour is identical to before.
     private var bindings = KeyBindingStore.load()
 
+    // The Ctrl+Opt+Cmd trio is a local control prefix (stream-control hotkeys / overlay); while
+    // all three are physically held we do NOT forward them to the host (see keyboard-remapping.md
+    // §6), otherwise the host would see Ctrl+Alt+Win for the gesture's duration.
+    private var controlPrefixActive = false
+    private static let trioKeyCodes: Set<Int> = [0x3B, 0x3E, 0x3A, 0x3D, 0x37, 0x36]
+
+    // fn-layer latch: Ctrl+Opt+Cmd+fn opens a 10 s window where the navigation cluster maps to
+    // its fn-layer equivalents without holding fn (keyboard-remapping.md §2). The function row
+    // still depends on the macOS "Use F1, F2 as standard function keys" setting; we do not fight
+    // the system media keys. `fnTranslated` remembers the VK actually sent on key-down so the
+    // key-up matches even if the latch expires while the key is held.
+    private var fnLatchExpiry: Date?
+    private var fnTranslated: [Int: Int] = [:]
+    private var fnLatchActive: Bool { if let e = fnLatchExpiry { return Date() < e }; return false }
+    private static let fnLayerVK: [Int: Int] = [
+        0x7E: 0x21,  // Up    -> Page Up   (VK_PRIOR)
+        0x7D: 0x22,  // Down  -> Page Down (VK_NEXT)
+        0x7B: 0x24,  // Left  -> Home      (VK_HOME)
+        0x7C: 0x23,  // Right -> End       (VK_END)
+        0x33: 0x2E,  // Delete (backspace) -> forward delete (VK_DELETE)
+    ]
+
     init(transport: StreamTransport) {
         self.transport = transport
         AppLogger.shared.log("InputHandler init", "input", "init")
@@ -52,6 +74,9 @@ final class InputHandler {
     func releaseAll() {
         pendingDX = 0
         pendingDY = 0
+        fnTranslated.removeAll()
+        fnLatchExpiry = nil
+        controlPrefixActive = false
         // Snapshot and clear before iterating — sendRawKey mutates heldKeys (remove),
         // so iterating the live set would trap on the mutation-during-enumeration guard.
         let keys    = heldKeys
@@ -108,6 +133,12 @@ final class InputHandler {
         sendKey(event, down: false)
     }
 
+    /// Open the fn-layer latch for 10 s (re-press to refresh). Triggered locally by the
+    /// Ctrl+Opt+Cmd+F hotkey, fn itself is reserved by macOS (Dictation), so it is not used.
+    func activateFnLatch() {
+        fnLatchExpiry = Date().addingTimeInterval(10)
+    }
+
     // Modifier keyCode pairs (left, right) for each flag, used to heal a stuck modifier.
     private static let modifierKeyCodes: [(NSEvent.ModifierFlags, [Int])] = [
         (.shift,    [0x38, 0x3C]),
@@ -136,12 +167,45 @@ final class InputHandler {
     // flagsChanged fires when a modifier key (shift, ctrl, option, cmd) is pressed/released.
     // Synthesise key-down or key-up based on whether the flag is now set.
     func handleFlagsChanged(_ event: NSEvent) {
+        let flags = event.modifierFlags
         let kc = Int(event.keyCode)
-        let down = event.modifierFlags.contains(modifierFlag(for: event.keyCode))
+
+        // Control-prefix gating. When the Ctrl+Opt+Cmd trio becomes / stops being fully held,
+        // either drop the forwarded trio (entering) or re-assert the ones still held (exiting).
+        let trioNow = flags.contains([.control, .option, .command])
+        if trioNow != controlPrefixActive {
+            controlPrefixActive = trioNow
+            if trioNow { releaseForwardedTrio() } else { reassertHeldTrio(flags) }
+        }
+        // While the prefix is held, suppress forwarding of the three trio keys entirely.
+        if controlPrefixActive, Self.trioKeyCodes.contains(kc) { return }
+
+        let down = flags.contains(modifierFlag(for: event.keyCode))
         // resolvedVK applies any user remap (held with full fidelity); nil means Block/None
         // or an unmapped key (e.g. fn with no binding), so send nothing.
         guard let vk = resolvedVK(forModifierKeyCode: kc) else { return }
         sendRawKey(vk: vk, modifiers: 0, down: down)
+    }
+
+    // Entering the control prefix: key-up any trio modifier currently forwarded to the host so
+    // none stick while we suppress them.
+    private func releaseForwardedTrio() {
+        for kc in Self.trioKeyCodes {
+            if let vk = resolvedVK(forModifierKeyCode: kc), heldKeys.contains(vk) {
+                sendRawKey(vk: vk, modifiers: 0, down: false)
+            }
+        }
+    }
+
+    // Leaving the control prefix: re-send key-down for the trio modifiers still physically held
+    // (left-side representative; the flags don't distinguish left/right).
+    private func reassertHeldTrio(_ flags: NSEvent.ModifierFlags) {
+        for (flag, kc) in [(NSEvent.ModifierFlags.control, 0x3B), (.option, 0x3A), (.command, 0x37)]
+        where flags.contains(flag) {
+            if let vk = resolvedVK(forModifierKeyCode: kc) {
+                sendRawKey(vk: vk, modifiers: 0, down: true)
+            }
+        }
     }
 
     // What a modifier keyCode currently sends to the host, after user remaps: a Win32 VK to
@@ -169,8 +233,25 @@ final class InputHandler {
     }
 
     private func sendKey(_ event: NSEvent, down: Bool) {
-        guard let vk = macToWin32[Int(event.keyCode)] else { return }
+        let kc = Int(event.keyCode)
         let modifiers = appleToApolloModifiers(event.modifierFlags)
+        let vk: Int
+        if down {
+            // fn-layer: while the latch is active, remap the nav cluster; remember it for the up.
+            if fnLatchActive, let fnVK = Self.fnLayerVK[kc] {
+                fnTranslated[kc] = fnVK
+                vk = fnVK
+            } else if let base = macToWin32[kc] {
+                vk = base
+            } else { return }
+        } else {
+            // Release the same VK that was sent on the way down (handles a latch expiring mid-hold).
+            if let fnVK = fnTranslated.removeValue(forKey: kc) {
+                vk = fnVK
+            } else if let base = macToWin32[kc] {
+                vk = base
+            } else { return }
+        }
         sendRawKey(vk: vk, modifiers: modifiers, down: down)
     }
 

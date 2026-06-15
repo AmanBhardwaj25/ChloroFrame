@@ -333,6 +333,12 @@ final class InputCaptureMetalView: NSView {
             onToggleStats?()
             return
         }
+        // Ctrl+Option+Command+F: activate the fn-layer latch (10 s). fn itself is reserved by
+        // macOS (Dictation/emoji), so F is the trigger. keyCode 0x03 = F.
+        if event.keyCode == 0x03 && mods == [.control, .option, .command] {
+            inputHandler?.activateFnLatch()
+            return
+        }
         // The remote OS handles its own key-repeat; don't send repeat events.
         guard !event.isARepeat else { return }
         inputHandler?.handleKeyDown(event)
