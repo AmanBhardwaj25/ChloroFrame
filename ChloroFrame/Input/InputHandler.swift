@@ -37,6 +37,33 @@ final class InputHandler {
     private var heldKeys    = Set<Int>()    // Win32 VK codes
     private var heldButtons = Set<UInt8>()  // Apollo button codes (1=left,2=mid,3=right,4=x1,5=x2)
 
+    // User remaps for the four editable modifiers (command/option/control/fn). Loaded once;
+    // the editor applies outside the stream, so a fresh InputHandler picks up changes on the
+    // next session. Empty by default ⇒ behaviour is identical to before.
+    private var bindings = KeyBindingStore.load()
+
+    // The Ctrl+Opt+Cmd trio is a local control prefix (stream-control hotkeys / overlay); while
+    // all three are physically held we do NOT forward them to the host (see keyboard-remapping.md
+    // §6), otherwise the host would see Ctrl+Alt+Win for the gesture's duration.
+    private var controlPrefixActive = false
+    private static let trioKeyCodes: Set<Int> = [0x3B, 0x3E, 0x3A, 0x3D, 0x37, 0x36]
+
+    // fn-layer latch: Ctrl+Opt+Cmd+fn opens a 10 s window where the navigation cluster maps to
+    // its fn-layer equivalents without holding fn (keyboard-remapping.md §2). The function row
+    // still depends on the macOS "Use F1, F2 as standard function keys" setting; we do not fight
+    // the system media keys. `fnTranslated` remembers the VK actually sent on key-down so the
+    // key-up matches even if the latch expires while the key is held.
+    private var fnLatchExpiry: Date?
+    private var fnTranslated: [Int: Int] = [:]
+    private var fnLatchActive: Bool { if let e = fnLatchExpiry { return Date() < e }; return false }
+    private static let fnLayerVK: [Int: Int] = [
+        0x7E: 0x21,  // Up    -> Page Up   (VK_PRIOR)
+        0x7D: 0x22,  // Down  -> Page Down (VK_NEXT)
+        0x7B: 0x24,  // Left  -> Home      (VK_HOME)
+        0x7C: 0x23,  // Right -> End       (VK_END)
+        0x33: 0x2E,  // Delete (backspace) -> forward delete (VK_DELETE)
+    ]
+
     init(transport: StreamTransport) {
         self.transport = transport
         AppLogger.shared.log("InputHandler init", "input", "init")
@@ -47,6 +74,9 @@ final class InputHandler {
     func releaseAll() {
         pendingDX = 0
         pendingDY = 0
+        fnTranslated.removeAll()
+        fnLatchExpiry = nil
+        controlPrefixActive = false
         // Snapshot and clear before iterating — sendRawKey mutates heldKeys (remove),
         // so iterating the live set would trap on the mutation-during-enumeration guard.
         let keys    = heldKeys
@@ -94,25 +124,134 @@ final class InputHandler {
     // MARK: - Keyboard
 
     func handleKeyDown(_ event: NSEvent) {
+        releaseStaleModifiers(event.modifierFlags)
         sendKey(event, down: true)
     }
 
     func handleKeyUp(_ event: NSEvent) {
+        releaseStaleModifiers(event.modifierFlags)
         sendKey(event, down: false)
+    }
+
+    /// Open the fn-layer latch for 10 s (re-press to refresh). Triggered locally by the
+    /// Ctrl+Opt+Cmd+F hotkey, fn itself is reserved by macOS (Dictation), so it is not used.
+    func activateFnLatch() {
+        fnLatchExpiry = Date().addingTimeInterval(10)
+    }
+
+    // Modifier keyCode pairs (left, right) for each flag, used to heal a stuck modifier.
+    private static let modifierKeyCodes: [(NSEvent.ModifierFlags, [Int])] = [
+        (.shift,    [0x38, 0x3C]),
+        (.control,  [0x3B, 0x3E]),
+        (.option,   [0x3A, 0x3D]),
+        (.command,  [0x37, 0x36]),
+        (.function, [0x3F]),
+    ]
+
+    // Release any modifier the Mac no longer reports as held but that we still have marked down
+    // on the host. Heals a stuck modifier from a missed flagsChanged, the macOS "Command eats
+    // keyUp" quirk (no keyUp is delivered while Command is held), or a previously-dropped key-up.
+    // Release-only, so it can never double-press a legitimately-held modifier. Run before each
+    // keystroke and on mouse motion so a stuck Windows key (Command) can't combine with the next
+    // key into Win+L (lock screen) and friends.
+    private func releaseStaleModifiers(_ flags: NSEvent.ModifierFlags) {
+        for (flag, keyCodes) in Self.modifierKeyCodes where !flags.contains(flag) {
+            for kc in keyCodes {
+                // Resolve through the user remap so a remapped modifier's target is released too.
+                guard let vk = resolvedVK(forModifierKeyCode: kc), heldKeys.contains(vk) else { continue }
+                sendRawKey(vk: vk, modifiers: 0, down: false)
+            }
+        }
     }
 
     // flagsChanged fires when a modifier key (shift, ctrl, option, cmd) is pressed/released.
     // Synthesise key-down or key-up based on whether the flag is now set.
     func handleFlagsChanged(_ event: NSEvent) {
-        guard let vk = macToWin32[Int(event.keyCode)] else { return }
-        let flag = modifierFlag(for: event.keyCode)
-        let down = event.modifierFlags.contains(flag)
+        let flags = event.modifierFlags
+        let kc = Int(event.keyCode)
+
+        // Control-prefix gating. When the Ctrl+Opt+Cmd trio becomes / stops being fully held,
+        // either drop the forwarded trio (entering) or re-assert the ones still held (exiting).
+        let trioNow = flags.contains([.control, .option, .command])
+        if trioNow != controlPrefixActive {
+            controlPrefixActive = trioNow
+            if trioNow { releaseForwardedTrio() } else { reassertHeldTrio(flags) }
+        }
+        // While the prefix is held, suppress forwarding of the three trio keys entirely.
+        if controlPrefixActive, Self.trioKeyCodes.contains(kc) { return }
+
+        let down = flags.contains(modifierFlag(for: event.keyCode))
+        // resolvedVK applies any user remap (held with full fidelity); nil means Block/None
+        // or an unmapped key (e.g. fn with no binding), so send nothing.
+        guard let vk = resolvedVK(forModifierKeyCode: kc) else { return }
         sendRawKey(vk: vk, modifiers: 0, down: down)
     }
 
+    // Entering the control prefix: key-up any trio modifier currently forwarded to the host so
+    // none stick while we suppress them.
+    private func releaseForwardedTrio() {
+        for kc in Self.trioKeyCodes {
+            if let vk = resolvedVK(forModifierKeyCode: kc), heldKeys.contains(vk) {
+                sendRawKey(vk: vk, modifiers: 0, down: false)
+            }
+        }
+    }
+
+    // Leaving the control prefix: re-send key-down for the trio modifiers still physically held
+    // (left-side representative; the flags don't distinguish left/right).
+    private func reassertHeldTrio(_ flags: NSEvent.ModifierFlags) {
+        for (flag, kc) in [(NSEvent.ModifierFlags.control, 0x3B), (.option, 0x3A), (.command, 0x37)]
+        where flags.contains(flag) {
+            if let vk = resolvedVK(forModifierKeyCode: kc) {
+                sendRawKey(vk: vk, modifiers: 0, down: true)
+            }
+        }
+    }
+
+    // What a modifier keyCode currently sends to the host, after user remaps: a Win32 VK to
+    // hold, or nil for Block/None / unmapped. Editable modifiers consult their binding;
+    // everything else uses the default macToWin32 mapping.
+    private func resolvedVK(forModifierKeyCode kc: Int) -> Int? {
+        if let mod = editableModifierName(forKeyCode: kc) {
+            switch bindings.target(for: mod) {
+            case .block:     return nil
+            case .vk(let v): return v
+            case .unchanged: return macToWin32[kc]
+            }
+        }
+        return macToWin32[kc]
+    }
+
+    private func editableModifierName(forKeyCode kc: Int) -> String? {
+        switch kc {
+        case 0x37, 0x36: return "command"
+        case 0x3A, 0x3D: return "option"
+        case 0x3B, 0x3E: return "control"
+        case 0x3F:       return "fn"
+        default:         return nil
+        }
+    }
+
     private func sendKey(_ event: NSEvent, down: Bool) {
-        guard let vk = macToWin32[Int(event.keyCode)] else { return }
+        let kc = Int(event.keyCode)
         let modifiers = appleToApolloModifiers(event.modifierFlags)
+        let vk: Int
+        if down {
+            // fn-layer: while the latch is active, remap the nav cluster; remember it for the up.
+            if fnLatchActive, let fnVK = Self.fnLayerVK[kc] {
+                fnTranslated[kc] = fnVK
+                vk = fnVK
+            } else if let base = macToWin32[kc] {
+                vk = base
+            } else { return }
+        } else {
+            // Release the same VK that was sent on the way down (handles a latch expiring mid-hold).
+            if let fnVK = fnTranslated.removeValue(forKey: kc) {
+                vk = fnVK
+            } else if let base = macToWin32[kc] {
+                vk = base
+            } else { return }
+        }
         sendRawKey(vk: vk, modifiers: modifiers, down: down)
     }
 
@@ -136,6 +275,7 @@ final class InputHandler {
     // MARK: - Mouse movement
 
     func handleMouseMoved(_ event: NSEvent) {
+        releaseStaleModifiers(event.modifierFlags)
         let (dx, dy) = rawDelta(from: event)
         pendingDX += dx
         pendingDY += dy
@@ -289,6 +429,7 @@ final class InputHandler {
         case 0x3B, 0x3E: return .control
         case 0x3A, 0x3D: return .option
         case 0x37, 0x36: return .command
+        case 0x3F:       return .function
         case 0x39:       return .capsLock
         default:         return []
         }

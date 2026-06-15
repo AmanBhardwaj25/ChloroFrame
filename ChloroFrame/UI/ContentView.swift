@@ -71,6 +71,9 @@ struct ContentView: View {
     @State private var showAddressEntry = false
     @State private var connectingHost: Host?
     @State private var showStats      = false
+    @State private var showControls   = false
+    @State private var showControlsHelp = false
+    @State private var controlsHideWork: DispatchWorkItem?
     @State private var awdlMonitor    = AWDLStatusMonitor()
     @Environment(\.openSettings) private var openSettings
 
@@ -92,6 +95,9 @@ struct ContentView: View {
         .sheet(item: $connectingHost) { host in
             HostConnectionView(host: host)
                 .environment(streamState)
+        }
+        .sheet(isPresented: $showControlsHelp) {
+            StreamControlsHelpView()
         }
         .onReceive(NotificationCenter.default.publisher(for: .showAddHost)) { _ in
             showAddressEntry = true
@@ -128,7 +134,8 @@ struct ContentView: View {
                     streamFps: streamState.stats?.requestedFps ?? 120,
                     inputHandler: streamState.inputHandler,
                     onDisconnect: { streamState.stop() },
-                    onToggleStats: { showStats.toggle() }
+                    onToggleStats: { showStats.toggle() },
+                    onShowControls: { revealControlsOverlay() }
                 )
             } else {
                 Color.black
@@ -139,10 +146,44 @@ struct ContentView: View {
                     .padding(16)
                     .allowsHitTesting(false)
             }
+
+            if showControls {
+                controlsOverlay
+                    .padding(.top, 28)
+                    .frame(maxWidth: .infinity, alignment: .top)
+                    .allowsHitTesting(false)
+                    .transition(.opacity)
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .animation(.easeInOut(duration: 0.25), value: showControls)
         .onAppear  { awdlMonitor.start() }
-        .onDisappear { awdlMonitor.stop() }
+        .onDisappear { awdlMonitor.stop(); controlsHideWork?.cancel() }
+    }
+
+    // Translucent card listing the stream shortcuts. Shown after holding ⌃⌥⌘ for 2 s,
+    // auto-hides after 6 s.
+    private var controlsOverlay: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Stream controls")
+                .font(.system(size: 15, weight: .bold))
+                .foregroundStyle(.white)
+            StreamControlsList(onLight: false)
+        }
+        .padding(20)
+        .background(
+            RoundedRectangle(cornerRadius: 14)
+                .fill(Color.black.opacity(0.72))
+        )
+        .frame(maxWidth: 460)
+    }
+
+    private func revealControlsOverlay() {
+        controlsHideWork?.cancel()
+        showControls = true
+        let work = DispatchWorkItem { showControls = false }
+        controlsHideWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 6.0, execute: work)
     }
 
     // MARK: - Host list view
@@ -153,7 +194,23 @@ struct ContentView: View {
             discoverySection
             Divider()
             hostsSection
+            controlsHint
         }
+    }
+
+    // Subtle pointer so users learn the in-stream gesture even before their first session.
+    private var controlsHint: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "info.circle")
+            Text("While streaming, hold \(StreamControlsInfo.trio) to see stream controls.")
+            Button("Learn more") { showControlsHelp = true }
+                .buttonStyle(.link)
+        }
+        .font(.caption)
+        .foregroundStyle(.secondary)
+        .padding(.horizontal, 28)
+        .padding(.vertical, 10)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     // MARK: Header
@@ -168,6 +225,13 @@ struct ContentView: View {
                 .font(.largeTitle)
                 .fontWeight(.bold)
             Spacer()
+            Button { showControlsHelp = true } label: {
+                Image(systemName: "questionmark.circle")
+                    .font(.title2)
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+            .help("Stream controls")
             Button { openSettings() } label: {
                 Image(systemName: "gearshape")
                     .font(.title2)
