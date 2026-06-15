@@ -94,11 +94,36 @@ final class InputHandler {
     // MARK: - Keyboard
 
     func handleKeyDown(_ event: NSEvent) {
+        releaseStaleModifiers(event.modifierFlags)
         sendKey(event, down: true)
     }
 
     func handleKeyUp(_ event: NSEvent) {
+        releaseStaleModifiers(event.modifierFlags)
         sendKey(event, down: false)
+    }
+
+    // Modifier keyCode pairs (left, right) for each flag, used to heal a stuck modifier.
+    private static let modifierKeyCodes: [(NSEvent.ModifierFlags, [Int])] = [
+        (.shift,   [0x38, 0x3C]),
+        (.control, [0x3B, 0x3E]),
+        (.option,  [0x3A, 0x3D]),
+        (.command, [0x37, 0x36]),
+    ]
+
+    // Release any modifier the Mac no longer reports as held but that we still have marked down
+    // on the host. Heals a stuck modifier from a missed flagsChanged, the macOS "Command eats
+    // keyUp" quirk (no keyUp is delivered while Command is held), or a previously-dropped key-up.
+    // Release-only, so it can never double-press a legitimately-held modifier. Run before each
+    // keystroke and on mouse motion so a stuck Windows key (Command) can't combine with the next
+    // key into Win+L (lock screen) and friends.
+    private func releaseStaleModifiers(_ flags: NSEvent.ModifierFlags) {
+        for (flag, keyCodes) in Self.modifierKeyCodes where !flags.contains(flag) {
+            for kc in keyCodes {
+                guard let vk = macToWin32[kc], heldKeys.contains(vk) else { continue }
+                sendRawKey(vk: vk, modifiers: 0, down: false)
+            }
+        }
     }
 
     // flagsChanged fires when a modifier key (shift, ctrl, option, cmd) is pressed/released.
@@ -136,6 +161,7 @@ final class InputHandler {
     // MARK: - Mouse movement
 
     func handleMouseMoved(_ event: NSEvent) {
+        releaseStaleModifiers(event.modifierFlags)
         let (dx, dy) = rawDelta(from: event)
         pendingDX += dx
         pendingDY += dy
