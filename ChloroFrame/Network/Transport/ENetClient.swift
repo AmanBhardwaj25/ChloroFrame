@@ -60,6 +60,22 @@ final class ENetClient {
     // Per-channel ENet reliable sequence counters (outbound).
     private var outSeq = [UInt8: UInt16]()
 
+    // Outbound reliable packets awaiting ACK, keyed by (channel<<16 | seq). Retransmitted on a
+    // timer until the host ACKs them. Without this, a single dropped control packet leaves a gap
+    // in the host's in-order reliable channel that nothing fills, silently killing all input on
+    // that channel until reconnect. sendQueue-confined.
+    private struct PendingReliable {
+        let channel: UInt8
+        let seq:     UInt16
+        let body:    [UInt8]
+        var lastSentNanos: UInt64
+        var retries: Int
+    }
+    private var pendingReliable: [UInt32: PendingReliable] = [:]
+    private var retransmitTimer: DispatchSourceTimer?
+    private static let reliableRtoNanos:   UInt64 = 100_000_000   // resend if unacked for 100 ms
+    private static let reliableMaxRetries: Int    = 100           // ~10 s unacked ⇒ peer is dead
+
     // Pending connect continuation.
     private var connectCont: CheckedContinuation<Void, Error>?
 
@@ -136,6 +152,11 @@ final class ENetClient {
             }
             let seq = self.nextSeq(channel: channel)
             self.sendRaw(self.buildSendReliable(channel: channel, seq: seq, data: body))
+            // Track until ACKed so a dropped packet gets retransmitted (see retransmitTick).
+            let key = (UInt32(channel) << 16) | UInt32(seq)
+            self.pendingReliable[key] = PendingReliable(
+                channel: channel, seq: seq, body: body,
+                lastSentNanos: DispatchTime.now().uptimeNanoseconds, retries: 0)
         }
     }
 
@@ -145,6 +166,8 @@ final class ENetClient {
         // Drain the send queue so any packets queued just before disconnect (e.g. key-up
         // releases from InputHandler.releaseAll) are sent before we cancel the connection.
         sendQueue.sync {
+            retransmitTimer?.cancel(); retransmitTimer = nil
+            pendingReliable.removeAll()
             state  = .idle
             outgoingPeerID = ENET_UNCONNECTED_PEER_ID
             outSeq.removeAll()
@@ -264,13 +287,18 @@ final class ENetClient {
             switch cmd {
             case ECMD_ACKNOWLEDGE:
                 guard o + 4 <= b.count else { return }
+                // Body: receivedReliableSequenceNumber (2) + receivedSentTime (2). Clear the
+                // matching tracked packet so it stops being retransmitted.
+                let ackedSeq = be16(b, o)
                 o += 4
+                pendingReliable[(UInt32(channel) << 16) | UInt32(ackedSeq)] = nil
 
             case ECMD_VERIFY_CONNECT:
                 guard o + 40 <= b.count else { return }
                 let svrPeer = be16(b, o); o += 40
                 outgoingPeerID = svrPeer
                 state = .connected
+                startRetransmitTimer()
                 print("[ChloroFrame][enet] VERIFY_CONNECT ✓  ch=\(channel)  svrPeer=\(svrPeer)  encrypted=\(rikey != nil)")
                 sendRaw(buildAck(channel: channel, seq: seq, remoteSentTime: remoteSentTime))
                 connectCont?.resume()
@@ -291,6 +319,8 @@ final class ENetClient {
                 o += 4
                 print("[ChloroFrame][enet] server sent DISCONNECT")
                 pingTask?.cancel(); pingTask = nil
+                retransmitTimer?.cancel(); retransmitTimer = nil
+                pendingReliable.removeAll()
                 conn?.cancel(); conn = nil
                 state = .idle
                 onDisconnect?()
@@ -362,6 +392,42 @@ final class ENetClient {
         let now = UInt16(truncatingIfNeeded: DispatchTime.now().uptimeNanoseconds / 1_000_000)
         append16BE(&d, peerID | ENET_HEADER_FLAG_SENT_TIME)
         append16BE(&d, now)
+    }
+
+    // MARK: - Reliable retransmission (sendQueue only)
+
+    private func startRetransmitTimer() {
+        retransmitTimer?.cancel()
+        let t = DispatchSource.makeTimerSource(queue: sendQueue)
+        t.schedule(deadline: .now() + .milliseconds(50), repeating: .milliseconds(50),
+                   leeway: .milliseconds(10))
+        t.setEventHandler { [weak self] in self?.retransmitTick() }
+        t.resume()
+        retransmitTimer = t
+    }
+
+    private func retransmitTick() {
+        guard state == .connected, !pendingReliable.isEmpty else { return }
+        let now = DispatchTime.now().uptimeNanoseconds
+        for key in Array(pendingReliable.keys) {
+            guard var p = pendingReliable[key],
+                  now &- p.lastSentNanos >= Self.reliableRtoNanos else { continue }
+            if p.retries >= Self.reliableMaxRetries {
+                print("[ChloroFrame][enet] reliable ch=\(p.channel) seq=\(p.seq) unacked after \(p.retries) retries — peer dead, disconnecting")
+                pendingReliable.removeAll()
+                retransmitTimer?.cancel(); retransmitTimer = nil
+                conn?.cancel(); conn = nil
+                state = .idle
+                onDisconnect?()
+                return
+            }
+            // Rebuild so the header carries a fresh sent-time; the seq is unchanged so the host
+            // fills the gap (or de-dupes if the original arrived but its ACK was lost).
+            sendRaw(buildSendReliable(channel: p.channel, seq: p.seq, data: p.body))
+            p.lastSentNanos = now
+            p.retries += 1
+            pendingReliable[key] = p
+        }
     }
 
     // MARK: - Helpers
