@@ -37,6 +37,11 @@ final class InputHandler {
     private var heldKeys    = Set<Int>()    // Win32 VK codes
     private var heldButtons = Set<UInt8>()  // Apollo button codes (1=left,2=mid,3=right,4=x1,5=x2)
 
+    // User remaps for the four editable modifiers (command/option/control/fn). Loaded once;
+    // the editor applies outside the stream, so a fresh InputHandler picks up changes on the
+    // next session. Empty by default ⇒ behaviour is identical to before.
+    private var bindings = KeyBindingStore.load()
+
     init(transport: StreamTransport) {
         self.transport = transport
         AppLogger.shared.log("InputHandler init", "input", "init")
@@ -105,10 +110,11 @@ final class InputHandler {
 
     // Modifier keyCode pairs (left, right) for each flag, used to heal a stuck modifier.
     private static let modifierKeyCodes: [(NSEvent.ModifierFlags, [Int])] = [
-        (.shift,   [0x38, 0x3C]),
-        (.control, [0x3B, 0x3E]),
-        (.option,  [0x3A, 0x3D]),
-        (.command, [0x37, 0x36]),
+        (.shift,    [0x38, 0x3C]),
+        (.control,  [0x3B, 0x3E]),
+        (.option,   [0x3A, 0x3D]),
+        (.command,  [0x37, 0x36]),
+        (.function, [0x3F]),
     ]
 
     // Release any modifier the Mac no longer reports as held but that we still have marked down
@@ -120,7 +126,8 @@ final class InputHandler {
     private func releaseStaleModifiers(_ flags: NSEvent.ModifierFlags) {
         for (flag, keyCodes) in Self.modifierKeyCodes where !flags.contains(flag) {
             for kc in keyCodes {
-                guard let vk = macToWin32[kc], heldKeys.contains(vk) else { continue }
+                // Resolve through the user remap so a remapped modifier's target is released too.
+                guard let vk = resolvedVK(forModifierKeyCode: kc), heldKeys.contains(vk) else { continue }
                 sendRawKey(vk: vk, modifiers: 0, down: false)
             }
         }
@@ -129,10 +136,36 @@ final class InputHandler {
     // flagsChanged fires when a modifier key (shift, ctrl, option, cmd) is pressed/released.
     // Synthesise key-down or key-up based on whether the flag is now set.
     func handleFlagsChanged(_ event: NSEvent) {
-        guard let vk = macToWin32[Int(event.keyCode)] else { return }
-        let flag = modifierFlag(for: event.keyCode)
-        let down = event.modifierFlags.contains(flag)
+        let kc = Int(event.keyCode)
+        let down = event.modifierFlags.contains(modifierFlag(for: event.keyCode))
+        // resolvedVK applies any user remap (held with full fidelity); nil means Block/None
+        // or an unmapped key (e.g. fn with no binding), so send nothing.
+        guard let vk = resolvedVK(forModifierKeyCode: kc) else { return }
         sendRawKey(vk: vk, modifiers: 0, down: down)
+    }
+
+    // What a modifier keyCode currently sends to the host, after user remaps: a Win32 VK to
+    // hold, or nil for Block/None / unmapped. Editable modifiers consult their binding;
+    // everything else uses the default macToWin32 mapping.
+    private func resolvedVK(forModifierKeyCode kc: Int) -> Int? {
+        if let mod = editableModifierName(forKeyCode: kc) {
+            switch bindings.target(for: mod) {
+            case .block:     return nil
+            case .vk(let v): return v
+            case .unchanged: return macToWin32[kc]
+            }
+        }
+        return macToWin32[kc]
+    }
+
+    private func editableModifierName(forKeyCode kc: Int) -> String? {
+        switch kc {
+        case 0x37, 0x36: return "command"
+        case 0x3A, 0x3D: return "option"
+        case 0x3B, 0x3E: return "control"
+        case 0x3F:       return "fn"
+        default:         return nil
+        }
     }
 
     private func sendKey(_ event: NSEvent, down: Bool) {
@@ -315,6 +348,7 @@ final class InputHandler {
         case 0x3B, 0x3E: return .control
         case 0x3A, 0x3D: return .option
         case 0x37, 0x36: return .command
+        case 0x3F:       return .function
         case 0x39:       return .capsLock
         default:         return []
         }

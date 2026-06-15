@@ -17,6 +17,7 @@ struct SettingsView: View {
 
     @State private var awdlReady = AWDLSuppressor.shared.isHelperInstalled
     @State private var awdlSetupError: String?
+    @State private var showKeybinds = false
 
     var body: some View {
         Form {
@@ -49,10 +50,16 @@ struct SettingsView: View {
                 Toggle("Use Swift FEC", isOn: $useSwiftFEC)
                     .help("Use the pure-Swift Reed-Solomon implementation instead of the C (nanors) path. Both are functionally identical; this is for diagnostic comparison.")
             }
+
+            Section("Input") {
+                Button("Setup custom keybinds…") { showKeybinds = true }
+                    .help("Remap the command, option, control, and fn keys for the host. Takes effect on the next connect.")
+            }
         }
         .formStyle(.grouped)
-        .frame(width: 440, height: suppressAWDL && !awdlReady ? 370 : 340)
+        .frame(width: 440, height: (suppressAWDL && !awdlReady ? 370 : 340) + 64)
         .onAppear { awdlReady = AWDLSuppressor.shared.isHelperInstalled }
+        .sheet(isPresented: $showKeybinds) { KeybindEditorView() }
     }
 
     private var awdlSetupRow: some View {
