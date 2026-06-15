@@ -76,15 +76,18 @@ struct StreamControlsHelpView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             VStack(alignment: .leading, spacing: 4) {
-                Text("Stream controls").font(.headline)
-                Text("The \(StreamControlsInfo.trio) keys are reserved for ChloroFrame and are never sent to the host, so these are always safe to press while streaming.")
-                    .font(.caption).foregroundStyle(.secondary)
+                Text("Stream controls")
+                    .font(.headline)
+                    .foregroundStyle(.white)
+                Text("The \(StreamControlsInfo.trio) combo is reserved for ChloroFrame: while all three are held together they aren't sent to the host, so these shortcuts are always safe to press while streaming. (Pressed on their own, the keys still work normally.)")
+                    .font(.caption)
+                    .foregroundStyle(Color(white: 0.80))
                     .fixedSize(horizontal: false, vertical: true)
             }
 
-            StreamControlsList(onLight: true)
+            StreamControlsList(onLight: false)
 
-            Divider()
+            Divider().overlay(Color.white.opacity(0.15))
 
             HStack {
                 Spacer()
@@ -94,5 +97,6 @@ struct StreamControlsHelpView: View {
         }
         .padding(20)
         .frame(width: 460)
+        .background(Color.black.opacity(0.92))
     }
 }
