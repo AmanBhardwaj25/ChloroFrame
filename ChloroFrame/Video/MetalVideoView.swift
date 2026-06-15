@@ -198,6 +198,7 @@ final class InputCaptureMetalView: NSView {
             resetTrackingArea()
             applyBackingScale()
             startRenderLoop()
+            autoCaptureCursor()
             NotificationCenter.default.addObserver(
                 self, selector: #selector(appWillResignActive),
                 name: NSApplication.willResignActiveNotification, object: nil
@@ -229,6 +230,21 @@ final class InputCaptureMetalView: NSView {
         guard restoreCursorLockOnActivate, window?.isKeyWindow == true else { return }
         restoreCursorLockOnActivate = false
         lockCursor()
+    }
+
+    // Capture the cursor as soon as the stream window becomes key, so the user does not have to
+    // click to "sync" on launch. The view attaches a beat before the window finishes becoming
+    // key, so poll a few runloop turns for key status, then lock. Gives up quietly if the window
+    // never becomes key (e.g. launched in the background) — a click still locks then.
+    private func autoCaptureCursor(attempt: Int = 0) {
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.window != nil, !self.cursorLocked else { return }
+            if self.window?.isKeyWindow == true {
+                self.lockCursor()
+            } else if attempt < 20 {
+                self.autoCaptureCursor(attempt: attempt + 1)
+            }
+        }
     }
 
     override func viewWillMove(toWindow newWindow: NSWindow?) {
