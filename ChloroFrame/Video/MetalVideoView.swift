@@ -20,12 +20,14 @@ struct MetalVideoView: NSViewRepresentable {
     var inputHandler: InputHandler?
     var onDisconnect: (() -> Void)?
     var onToggleStats: (() -> Void)?
+    var onShowControls: (() -> Void)?
 
     func makeNSView(context: Context) -> InputCaptureMetalView {
         let view = InputCaptureMetalView()
         view.inputHandler = inputHandler
         view.onDisconnect = onDisconnect
         view.onToggleStats = onToggleStats
+        view.onShowControls = onShowControls
         view.streamFps = streamFps
         view.renderer = renderer
         return view
@@ -37,6 +39,7 @@ struct MetalVideoView: NSViewRepresentable {
         nsView.inputHandler = inputHandler
         nsView.onDisconnect = onDisconnect
         nsView.onToggleStats = onToggleStats
+        nsView.onShowControls = onShowControls
         nsView.streamFps = streamFps
     }
 }
@@ -58,6 +61,12 @@ final class InputCaptureMetalView: NSView {
     var inputHandler: InputHandler?
     var onDisconnect: (() -> Void)?
     var onToggleStats: (() -> Void)?
+    var onShowControls: (() -> Void)?
+    // Discovery gesture: holding ⌃⌥⌘ alone (no other key) for 2 s reveals the controls overlay.
+    // Scheduled when the trio completes; cancelled if the trio breaks or any key is pressed
+    // (a key press means the user is invoking a hotkey, not asking for the list).
+    private var controlsHoldWork: DispatchWorkItem?
+    private var trioComplete = false
     /// Stream FPS requested by the server. Caps the display link's frame-rate range so a
     /// 60 fps stream on a 120 Hz display ticks at 60 Hz instead of double-drawing.
     var streamFps: Int = 120 {
@@ -316,6 +325,9 @@ final class InputCaptureMetalView: NSView {
     // MARK: - Keyboard
 
     override func keyDown(with event: NSEvent) {
+        // Any key press while waiting means the trio is being used as a hotkey prefix,
+        // not as the "show me the controls" gesture. Cancel the discovery timer.
+        cancelControlsHold()
         let mods = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
         // Ctrl+Option+Command+Q: disconnect stream
         if event.keyCode == 12 && mods == [.control, .option, .command] {
@@ -350,6 +362,31 @@ final class InputCaptureMetalView: NSView {
 
     override func flagsChanged(with event: NSEvent) {
         inputHandler?.handleFlagsChanged(event)
+
+        // Track the ⌃⌥⌘ trio for the discovery overlay. Exactly the three, nothing else.
+        let mods = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        let nowComplete = mods == [.control, .option, .command]
+        if nowComplete && !trioComplete {
+            scheduleControlsHold()
+        } else if !nowComplete {
+            cancelControlsHold()
+        }
+        trioComplete = nowComplete
+    }
+
+    private func scheduleControlsHold() {
+        controlsHoldWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, self.trioComplete else { return }
+            self.onShowControls?()
+        }
+        controlsHoldWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0, execute: work)
+    }
+
+    private func cancelControlsHold() {
+        controlsHoldWork?.cancel()
+        controlsHoldWork = nil
     }
 
     // MARK: - Mouse movement
