@@ -56,6 +56,13 @@ enum SunshineError: LocalizedError {
 @MainActor
 final class SunshineHTTPClient: NSObject {
 
+    // Name we present to the host during pairing. Apollo/Sunshine appears to label the
+    // virtual input devices after the paired client, so a clear, fixed name (not a setting,
+    // per spec §4) is the one lever we have to make the host show "Mac keyboard". Verify on
+    // the host after a fresh pair; the server typically records this at first pair, so an
+    // existing host may need an unpair + re-pair to pick up the new name.
+    static let clientDeviceName = "Mac keyboard"
+
     let host: Host
 
     private let uniqueDeviceId: String
@@ -127,7 +134,7 @@ final class SunshineHTTPClient: NSObject {
         AppLogger.shared.log("── phase 1: getservercert (blocks until PIN entered in Sunshine UI) ──", "PAIR", "phase1")
         let salt = randomBytes(16)
         let p1 = try await pairGet("pair", params: [
-            "devicename": "roth",
+            "devicename": Self.clientDeviceName,
             "updateState": "1",
             "phrase":      "getservercert",
             "salt":        salt.hexString,
@@ -153,7 +160,7 @@ final class SunshineHTTPClient: NSObject {
         let encChallenge    = try aesECBEncrypt(randomChallenge, key: aesKey)
 
         let p2 = try await pairGet("pair", params: [
-            "devicename":      "roth",
+            "devicename":      Self.clientDeviceName,
             "updateState":     "1",
             "clientchallenge": encChallenge.hexString,
         ])
@@ -187,7 +194,7 @@ final class SunshineHTTPClient: NSObject {
         let encPayloadHash = try aesECBEncrypt(payloadHash, key: aesKey)
 
         let p3 = try await pairGet("pair", params: [
-            "devicename":         "roth",
+            "devicename":         Self.clientDeviceName,
             "updateState":        "1",
             "serverchallengeresp": encPayloadHash.hexString,
         ])
@@ -228,7 +235,7 @@ final class SunshineHTTPClient: NSObject {
         }
 
         let p4 = try await pairGet("pair", params: [
-            "devicename":         "roth",
+            "devicename":         Self.clientDeviceName,
             "updateState":        "1",
             "clientpairingsecret": (clientSecret + clientSig).hexString,
         ])
@@ -238,7 +245,7 @@ final class SunshineHTTPClient: NSObject {
         // ── Phase 5: pairchallenge over HTTPS ────────────────────────────────────
         AppLogger.shared.log("── phase 5: pairchallenge (HTTPS + mTLS) ──", "PAIR", "phase5")
         let p5 = try await pairGetHTTPS("pair", params: [
-            "devicename":  "roth",
+            "devicename":  Self.clientDeviceName,
             "updateState": "1",
             "phrase":      "pairchallenge",
         ])

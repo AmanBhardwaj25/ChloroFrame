@@ -94,7 +94,9 @@ Implemented, but still alpha:
 - Opus audio decode through vendored libopus and CoreAudio pull playback, with an
   adaptive jitter buffer, clock-drift correction, and waveform-repeat underrun
   concealment.
-- Keyboard and mouse input over the Apollo control channel.
+- Keyboard and mouse input over the Apollo control channel, with custom remapping of
+  the fn/control/option/command modifier keys, an fn-layer latch, and a reserved
+  ⌃⌥⌘ control-prefix (held: hold it to reveal an in-stream controls overlay).
 
 Known gaps:
 
