@@ -56,6 +56,15 @@ final class AudioRingBuffer: @unchecked Sendable {
     // when a burst pushed occupancy past maxLatencyFrames). Sole writer: the render callback.
     private let _latencyClampFrames = Atomic<Int>(0)
 
+    // Latency the drift servo (audioQueue) asks the reader to shed. The render callback drains
+    // it on its next pull and applies it as a crossfaded skip — same click-free path as the
+    // latency clamp — instead of the writer hard-dropping a whole packet.
+    private let _pendingShedFrames = Atomic<Int>(0)
+
+    // Equal-power crossfade window applied at any reader-side skip (clamp or drift shed) so the
+    // splice is click-free instead of a hard jump. ~1.3 ms at 48 kHz.
+    private static let skipCrossfadeFrames: Int = 64
+
     var underrunCount:  Int    { _underruns.load(ordering: .relaxed) }
     var overrunCount:   Int    { _overruns.load(ordering: .relaxed) }
     var firstReadNanos: UInt64 { _firstReadNanos.load(ordering: .relaxed) }
@@ -106,6 +115,13 @@ final class AudioRingBuffer: @unchecked Sendable {
         _maxLatencyFrames.store(min(max(n, primingTargetFrames), capacity), ordering: .relaxed)
     }
 
+    /// Drift servo (audioQueue): ask the reader to shed `frames` of latency with a crossfade,
+    /// instead of the writer hard-dropping a packet. Accumulates until the next read().
+    func requestShed(frames: Int) {
+        guard frames > 0 else { return }
+        _pendingShedFrames.store(_pendingShedFrames.load(ordering: .relaxed) &+ frames, ordering: .relaxed)
+    }
+
     deinit { buf.deallocate() }
 
     // MARK: - Write (audioQueue only)
@@ -122,7 +138,7 @@ final class AudioRingBuffer: @unchecked Sendable {
     ///
     /// Returns the number of frames written (== `frameCount`, clamped to `capacity`).
     @discardableResult
-    func write(_ src: UnsafePointer<Float>, frameCount: Int) -> Int {
+    func write(_ src: UnsafePointer<Float>, frameCount: Int, fadeInFrames: Int = 0) -> Int {
         let wp = writePos.load(ordering: .relaxed)
         let rp = readPos.load(ordering: .acquiring)
 
@@ -134,10 +150,29 @@ final class AudioRingBuffer: @unchecked Sendable {
         if frameCount > capacity - (wp - rp) {
             _overruns.store(_overruns.load(ordering: .relaxed) &+ 1, ordering: .relaxed)
         }
+
+        // Optional fade-in from the last published sample. Used to splice a duplicated packet
+        // (drift insert) onto the stream without a click. Reads buf[wp-1] (a concurrent read
+        // with the consumer is not a data race) and writes only the unpublished [wp, wp+count).
+        let fade = min(max(fadeInFrames, 0), count)
+        var lastL: Float = 0, lastR: Float = 0
+        if fade > 0, wp > 0 {
+            let lidx = (wp - 1) & mask
+            lastL = buf[lidx * 2]
+            lastR = buf[lidx * 2 + 1]
+        }
+
         for i in 0..<count {
             let idx = (wp + i) & mask
-            buf[idx * 2]     = src[(srcOffset + i) * 2]
-            buf[idx * 2 + 1] = src[(srcOffset + i) * 2 + 1]
+            var l = src[(srcOffset + i) * 2]
+            var r = src[(srcOffset + i) * 2 + 1]
+            if i < fade {
+                let g = Float(i + 1) / Float(fade + 1)   // 0 → 1
+                l = lastL * (1 - g) + l * g
+                r = lastR * (1 - g) + r * g
+            }
+            buf[idx * 2]     = l
+            buf[idx * 2 + 1] = r
         }
         writePos.store(wp + count, ordering: .releasing)
         return count
@@ -175,18 +210,28 @@ final class AudioRingBuffer: @unchecked Sendable {
             }
         }
 
-        // Max-latency clamp: bound playback latency at maxLatencyFrames (well under the
-        // physical ring). A delivery burst that pushed occupancy past the cap gets its oldest
-        // audio skipped immediately, rather than waiting for the slow drift servo. Because the
-        // cap is < capacity, this also subsumes the physical lap case (those frames are valid).
-        // readPos stays single-writer (this callback): a forward clamp respects the
-        // reader-only-advances-readPos invariant.
+        // Reader-side skip = latency clamp + drift-servo shed, applied as ONE crossfaded jump.
+        //  - Latency clamp bounds playback latency at maxLatencyFrames (a delivery burst gets its
+        //    oldest audio skipped, rather than waiting for the slow drift servo).
+        //  - Drift shed is what the servo requests instead of the writer hard-dropping a packet.
+        // readPos stays single-writer (this callback), so advancing it here is race-free; the
+        // crossfade below makes the splice click-free instead of a hard jump.
+        let entryRp = rp
+        var skip = 0
         let maxLat = _maxLatencyFrames.load(ordering: .relaxed)
         if wp - rp > maxLat {
-            _latencyClampFrames.store(_latencyClampFrames.load(ordering: .relaxed) &+ ((wp - rp) - maxLat),
-                                      ordering: .relaxed)
-            rp = wp - maxLat
+            let clampSkip = (wp - rp) - maxLat
+            _latencyClampFrames.store(_latencyClampFrames.load(ordering: .relaxed) &+ clampSkip, ordering: .relaxed)
+            skip += clampSkip
         }
+        let shedReq = _pendingShedFrames.exchange(0, ordering: .relaxed)
+        if shedReq > 0 {
+            // Never shed so far that we starve this pull of its `frameCount` frames.
+            let room = max(0, (wp - rp) - skip - frameCount)
+            skip += min(shedReq, room)
+        }
+        rp += skip
+
         let avail = wp - rp
         let count = min(frameCount, avail)
 
@@ -203,10 +248,22 @@ final class AudioRingBuffer: @unchecked Sendable {
             concealActive = false
             recoverPos = 0
         }
+
+        // When we skipped, equal-power crossfade the first `xfade` output frames from the stale
+        // continuation (entryRp+i, continuous with the previous pull) into the kept stream (rp+i).
+        let xfade = skip > 0 ? min(Self.skipCrossfadeFrames, count) : 0
         for i in 0..<count {
             let idx = (rp + i) & mask
             var l = buf[idx * 2]
             var r = buf[idx * 2 + 1]
+            if i < xfade {
+                let theta  = (Float(i) + 0.5) / Float(xfade) * (Float.pi / 2)   // 0 → π/2
+                let gKept  = sin(theta)
+                let gStale = cos(theta)
+                let sidx = (entryRp + i) & mask
+                l = buf[sidx * 2]     * gStale + l * gKept
+                r = buf[sidx * 2 + 1] * gStale + r * gKept
+            }
             if recoverPos < Self.recoverLen {
                 let g = Float(recoverPos) / Float(Self.recoverLen)
                 l *= g
@@ -268,6 +325,7 @@ final class AudioRingBuffer: @unchecked Sendable {
         _firstReadNanos.store(0, ordering: .relaxed)
         _primeDropFrames.store(0, ordering: .relaxed)
         _latencyClampFrames.store(0, ordering: .relaxed)
+        _pendingShedFrames.store(0, ordering: .relaxed)
         concealActive = false
         concealPos = 0
         concealLoopStart = 0

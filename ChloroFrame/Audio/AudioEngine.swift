@@ -23,9 +23,8 @@
 
 import Foundation
 import AVFoundation
-import os
 
-private let alog = Logger(subsystem: "com.chloroframe", category: "audio")
+private let alog = NoopLog()
 
 enum AudioEngineState {
     case stopped, priming, running
@@ -61,6 +60,9 @@ final class AudioEngine: @unchecked Sendable {
     // Max frame size passed to opus_decode_float (20 ms at 48 kHz).
     // The actual frame count decoded is what libopus returns, not this ceiling.
     private static let maxFramesPerPacket:  Int    = 960
+    // Cap on synthesized frames per gap. Beyond this the dropout is too long to
+    // conceal convincingly; we stop filling and let the buffer/servo resync.
+    private static let maxConcealFrames:    Int    = 8      // ≤ 40 ms of concealment
     // 60 ms buffered before the (pre-warmed) engine starts consuming, and the initial
     // adaptive-buffer target. Raised from 40 ms because 40 ran too tight in this CoreAudio
     // setup (playback began nearly drained on the first pull).
@@ -112,7 +114,7 @@ final class AudioEngine: @unchecked Sendable {
                                              maxLatencyFrames: initialMaxLatencyFrames)
     private let avEngine   = AVAudioEngine()
     private var sourceNode: AVAudioSourceNode?
-    private var opusDecoder: OpaquePointer? = nil
+    private var decoder: AudioPacketDecoder?
 
     // audioQueue owns all mutable state below.
     private let audioQueue = DispatchQueue(label: "chloroframe.audio", qos: .userInteractive)
@@ -132,9 +134,25 @@ final class AudioEngine: @unchecked Sendable {
     private var lastAdaptGrowNanos:   UInt64 = 0
     private var lastAdaptShrinkNanos: UInt64 = 0
 
+    // Adaptive-shrink behaviour, chosen per session from the "Prefer smoother audio" setting.
+    // Defaults below = low-latency (current behaviour); the smoother profile raises the floor
+    // and shrinks gentler so the buffer keeps more cushion (fewer underruns, more latency).
+    private var cfgFloorFrames:         Int    = AudioEngine.targetFloorFrames
+    private var cfgShrinkFrames:        Int    = AudioEngine.adaptShrinkFrames
+    private var cfgShrinkIntervalNanos: UInt64 = AudioEngine.adaptShrinkIntervalNanos
+    private var cfgMarginFrames:        Int    = AudioEngine.adaptMarginFrames
+    private var cfgPadFrames:           Int    = AudioEngine.adaptPadFrames
+
     // Diagnostics — track previous packet for delta logging (first 20 packets).
     private var diagPrevRtp:     UInt32? = nil
     private var diagPrevArrival: UInt64? = nil
+
+    // Gap concealment: last decoded RTP sequence, and a running tally for diagnostics.
+    private var lastDecodedSeq:  UInt16? = nil
+    private var concealedFrames: Int = 0
+
+    // Throttle for the 1 Hz steady-state health log (audioQueue only).
+    private var lastSummaryNanos: UInt64 = 0
 
     // Startup-timing diagnostics. The engine is pre-warmed (started at setup), so its
     // ~300 ms cold start burns off before audio matters; the render callback's snap-to-
@@ -190,10 +208,32 @@ final class AudioEngine: @unchecked Sendable {
 
     private func startOnQueue() throws {
         guard state == .stopped else { return }
-        var err: Int32 = 0
-        opusDecoder = opus_decoder_create(48000, 2, &err)
-        guard err == OPUS_OK, opusDecoder != nil else {
-            throw AudioEngineError.decoderCreationFailed(err)
+
+        // Backend chosen at stream start. Apple path falls back to libopus if the
+        // AudioConverter can't be created, so a stream never fails to get audio.
+        let useApple = UserDefaults.standard.bool(forKey: "useAppleAudioDecoder")
+        decoder = (useApple ? AppleOpusDecoder() : nil) ?? LibOpusDecoder()
+        guard decoder != nil else {
+            throw AudioEngineError.decoderCreationFailed(OPUS_ALLOC_FAIL)
+        }
+        alog.info("audio decoder backend: \(useApple ? "Apple AudioToolbox" : "libopus")")
+
+        // "Prefer smoother audio" → keep more buffer cushion and shrink it gently, so jitter
+        // bursts don't drain the buffer (fewer underruns) at the cost of a little more latency.
+        if UserDefaults.standard.bool(forKey: "preferSmootherAudio") {
+            cfgFloorFrames         = 3360             // 70 ms floor (vs 50)
+            cfgShrinkFrames        = 48               //  1 ms shrink step (vs 2)
+            cfgShrinkIntervalNanos = 2_000_000_000    // ≤1 shrink / 2 s (vs 1 s)
+            cfgMarginFrames        = 720              // 15 ms safety margin (vs 10)
+            cfgPadFrames           = 480              // 10 ms pad (vs 5)
+            alog.info("audio buffer: smoother profile (higher floor, gentler shrink)")
+        } else {
+            cfgFloorFrames         = Self.targetFloorFrames
+            cfgShrinkFrames        = Self.adaptShrinkFrames
+            cfgShrinkIntervalNanos = Self.adaptShrinkIntervalNanos
+            cfgMarginFrames        = Self.adaptMarginFrames
+            cfgPadFrames           = Self.adaptPadFrames
+            alog.info("audio buffer: low-latency profile")
         }
         setupSourceNode()
         state = .priming
@@ -221,9 +261,12 @@ final class AudioEngine: @unchecked Sendable {
 
     private func stopOnQueue() {
         avEngine.stop()
-        if let dec = opusDecoder { opus_decoder_destroy(dec); opusDecoder = nil }
+        decoder = nil
         ringBuffer.reset()
         decodeCount        = 0
+        lastDecodedSeq     = nil
+        concealedFrames    = 0
+        lastSummaryNanos   = 0
         diagPrevRtp        = nil
         diagPrevArrival    = nil
         driftAvgFrames     = Double(Self.targetPrimingFrames)
@@ -262,21 +305,49 @@ final class AudioEngine: @unchecked Sendable {
         avEngine.connect(node, to: avEngine.mainMixerNode, format: pcmFormat)
     }
 
+    /// Reconstruct the `missing` packets immediately before `packet` and write them to the
+    /// ring in order: PLC for the older frames, FEC (carried in `packet`) for the most recent.
+    /// Must run before the normal decode of `packet` so the Opus decoder state stays continuous.
+    private func concealGap(missing: Int, using packet: NetworkAudioPacket, decoder: AudioPacketDecoder) {
+        let frameSize = packet.payload.withUnsafeBytes { decoder.frameCount(of: $0) }
+        guard frameSize > 0, frameSize <= Self.maxFramesPerPacket else { return }
+
+        let conceal = min(missing, Self.maxConcealFrames)
+        withUnsafeTemporaryAllocation(of: Float.self, capacity: Self.maxFramesPerPacket * 2) { buf in
+            // Older lost frames have no reachable FEC → model concealment (deep PLC in 1.6.1).
+            for _ in 0 ..< (conceal - 1) {
+                let n = decoder.decodePLC(frameCount: frameSize, into: buf.baseAddress!)
+                if n > 0 { _ = ringBuffer.write(buf.baseAddress!, frameCount: n) }
+            }
+            // Most recent lost frame: reconstruct from this packet's in-band FEC.
+            let n = packet.payload.withUnsafeBytes {
+                decoder.decodeFEC(from: $0, frameCount: frameSize, into: buf.baseAddress!)
+            }
+            if n > 0 { _ = ringBuffer.write(buf.baseAddress!, frameCount: n) }
+        }
+
+        concealedFrames += conceal
+        if concealedFrames <= 200 {
+            alog.info("conceal: gap of \(missing) before seq=\(packet.sequenceNumber) → filled \(conceal) frame(s) (FEC+PLC), total=\(self.concealedFrames)")
+        }
+    }
+
     private func decodeAndWrite(packet: NetworkAudioPacket) {
-        guard let dec = opusDecoder else { return }
+        guard let decoder else { return }
+
+        // Fill any gap before this packet (libopus only): the most recent lost frame
+        // is reconstructed from THIS packet's in-band FEC, older ones via PLC. Keeps
+        // the timeline continuous so a jitter/loss spike doesn't drain the buffer.
+        if decoder.supportsConcealment, let last = lastDecodedSeq {
+            let missing = Int(packet.sequenceNumber &- last) - 1   // UInt16 wrap-safe
+            if missing > 0 { concealGap(missing: missing, using: packet, decoder: decoder) }
+        }
+        lastDecodedSeq = packet.sequenceNumber
 
         // Interleaved stereo float32: max 20 ms × 2 channels = 1920 floats.
         withUnsafeTemporaryAllocation(of: Float.self, capacity: Self.maxFramesPerPacket * 2) { pcmBuf in
-            let framesDecoded: Int32 = packet.payload.withUnsafeBytes { raw in
-                guard let ptr = raw.baseAddress else { return OPUS_INVALID_PACKET }
-                return opus_decode_float(
-                    dec,
-                    ptr.assumingMemoryBound(to: UInt8.self),
-                    Int32(raw.count),
-                    pcmBuf.baseAddress!,
-                    Int32(Self.maxFramesPerPacket),
-                    0  // decode_fec = 0: normal decode (not FEC concealment)
-                )
+            let framesDecoded: Int = packet.payload.withUnsafeBytes { raw in
+                decoder.decode(raw, into: pcmBuf.baseAddress!, capacityFrames: Self.maxFramesPerPacket)
             }
 
             decodeCount += 1
@@ -303,9 +374,18 @@ final class AudioEngine: @unchecked Sendable {
 
             guard framesDecoded > 0 else { return }
             let frames = Int(framesDecoded)
+            var insertDuplicate = false   // drift servo: too-empty → append a faded copy below
 
             if state == .running {
                 let now = clock_gettime_nsec_np(CLOCK_MONOTONIC_RAW)
+
+                // 1 Hz health snapshot. Watch which counter ticks when a crackle is heard:
+                // under/over = ring under/overruns, clamp = samples shed by the latency clamp,
+                // dDrop/dIns = drift-servo hard packet drop/duplicate, conc = concealed frames.
+                if now &- lastSummaryNanos >= 1_000_000_000 {
+                    lastSummaryNanos = now
+                    alog.info("AUDIO 1s: under=\(self.ringBuffer.underrunCount) over=\(self.ringBuffer.overrunCount) clamp=\(self.ringBuffer.latencyClampFrames) dDrop=\(self.driftDrops) dIns=\(self.driftInserts) conc=\(self.concealedFrames) ring=\(self.ringBuffer.availableFrames) target=\(Int(self.adaptiveTargetFrames))")
+                }
 
                 // Track the windowed low-water mark of actual occupancy: snap down to any new
                 // dip, relax up slowly so old dips age out of the window. This gives the
@@ -331,13 +411,13 @@ final class AudioEngine: @unchecked Sendable {
                         lastAdaptGrowNanos = now
                         applyAdaptiveClamp()
                     }
-                } else if now &- lastAdaptShrinkNanos >= Self.adaptShrinkIntervalNanos {
+                } else if now &- lastAdaptShrinkNanos >= cfgShrinkIntervalNanos {
                     lastAdaptShrinkNanos = now
                     let drawdown  = max(0, adaptiveTargetFrames - lowWaterFrames)   // dip depth
-                    let needed    = drawdown + Double(Self.adaptMarginFrames)
-                    let floorT    = max(needed + Double(Self.adaptPadFrames), Double(Self.targetFloorFrames))
+                    let needed    = drawdown + Double(cfgMarginFrames)
+                    let floorT    = max(needed + Double(cfgPadFrames), Double(cfgFloorFrames))
                     if adaptiveTargetFrames > floorT {
-                        adaptiveTargetFrames = max(floorT, adaptiveTargetFrames - Double(Self.adaptShrinkFrames))
+                        adaptiveTargetFrames = max(floorT, adaptiveTargetFrames - Double(cfgShrinkFrames))
                         applyAdaptiveClamp()
                     }
                 }
@@ -350,16 +430,19 @@ final class AudioEngine: @unchecked Sendable {
                     let target = adaptiveTargetFrames
                     let band   = Double(Self.driftBandFrames)
                     if driftAvgFrames > target + band {
-                        // Too full → drop this (freshest) packet to shed ~5 ms of latency.
-                        // It was already decoded, so the Opus decoder state stays correct.
+                        // Too full → shed ~5 ms of latency. Instead of hard-dropping this packet
+                        // (an abrupt splice = click), we still write it below and ask the reader
+                        // to shed an equivalent amount via a crossfaded skip. Same latency result,
+                        // click-free. Decoder state stays correct (the packet is decoded + written).
+                        ringBuffer.requestShed(frames: frames)
                         driftDrops += 1
                         driftLastCorrection = now
                         driftAvgFrames -= Double(frames)
-                        return
                     } else if driftAvgFrames < target - band {
-                        // Too empty → duplicate this packet to add ~5 ms of cushion.
-                        // TODO: use an Opus PLC frame instead of a duplicate once PLC lands.
-                        ringBuffer.write(pcmBuf.baseAddress!, frameCount: frames)
+                        // Too empty → add ~5 ms of cushion by appending a copy of this packet
+                        // AFTER the normal write, crossfaded onto the stream so the duplicate
+                        // seam doesn't click (see below).
+                        insertDuplicate = true
                         driftInserts += 1
                         driftLastCorrection = now
                         driftAvgFrames += Double(frames)
@@ -368,6 +451,11 @@ final class AudioEngine: @unchecked Sendable {
             }
 
             ringBuffer.write(pcmBuf.baseAddress!, frameCount: frames)
+            if insertDuplicate {
+                // Append a faded copy: its head crossfades from the packet's last sample so the
+                // duplicate splice is click-free; its tail meets the next real packet normally.
+                ringBuffer.write(pcmBuf.baseAddress!, frameCount: frames, fadeInFrames: 64)
+            }
 
             // Priming → running: the pre-warmed render callback has pulled its first real
             // sample (firstReadNanos set), which means it primed and snapped to target. Flip
@@ -383,7 +471,7 @@ final class AudioEngine: @unchecked Sendable {
                     "AUDIO-START playing: ring=%.0fms dropped=%.0fms overruns=%ld  "
                     + "(pre-warm→first audio %.0fms)",
                     bufMs, dropMs, ringBuffer.overrunCount, warmMs))
-                alog.info("engine running — \(bufMs, format: .fixed(precision: 1)) ms buffered")
+                alog.info("engine running — \(bufMs) ms buffered")
             }
         }
     }

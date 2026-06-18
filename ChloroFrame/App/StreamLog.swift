@@ -19,15 +19,10 @@ import Foundation
 
 enum StreamLog {
 
-    /// Read once at first use; relaunch to change.
-    static let verbose = UserDefaults.standard.bool(forKey: "verboseStreamLogs")
-
-    private static let queue = DispatchQueue(label: "chloroframe.streamlog", qos: .utility)
+    /// Hard-disabled: keeps the external `if StreamLog.verbose` guard sites dead so
+    /// their gated blocks never build strings or log. (See Logging.swift.)
+    static let verbose = false
 
     @inline(__always)
-    static func log(_ line: @autoclosure () -> String) {
-        guard verbose else { return }
-        let s = line()
-        queue.async { print(s) }
-    }
+    static func log(_ line: @autoclosure () -> String) {}
 }

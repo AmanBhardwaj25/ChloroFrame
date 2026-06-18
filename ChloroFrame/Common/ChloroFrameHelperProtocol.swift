@@ -16,6 +16,12 @@ protocol ChloroFrameHelperProtocol {
     /// Read current awdl0 IFF_UP state without changing it.
     func getAWDLEnabled(reply: @escaping (Bool) -> Void)
 
+    /// Suspend (enabled=true) or resume (enabled=false) locationd via SIGSTOP/SIGCONT.
+    /// While suspended, locationd cannot issue its periodic Wi-Fi positioning scan —
+    /// the ~0.5s/60s off-channel radio stall that spikes streaming latency. Reversible.
+    /// reply(true) on success, reply(false) if locationd wasn't found or kill() failed.
+    func setLocationScanSuppressed(enabled: Bool, reply: @escaping (Bool) -> Void)
+
     /// No-op round-trip used to verify the connection is live.
     func ping(reply: @escaping () -> Void)
 }

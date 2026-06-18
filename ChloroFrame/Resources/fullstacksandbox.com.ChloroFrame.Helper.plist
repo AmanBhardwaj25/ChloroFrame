@@ -6,9 +6,10 @@
     <key>Label</key>
     <string>fullstacksandbox.com.ChloroFrame.Helper</string>
 
-    <!-- SMJobBless installs the binary to /Library/PrivilegedHelperTools/. -->
-    <key>Program</key>
-    <string>/Library/PrivilegedHelperTools/fullstacksandbox.com.ChloroFrame.Helper</string>
+    <!-- SMAppService runs the helper in-place from inside the app bundle.
+         BundleProgram is relative to the .app bundle root. -->
+    <key>BundleProgram</key>
+    <string>Contents/Library/LaunchDaemons/fullstacksandbox.com.ChloroFrame.Helper</string>
 
     <!-- On-demand: launchd starts the helper when the Mach service is first looked up. -->
     <key>MachServices</key>
