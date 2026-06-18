@@ -3,7 +3,7 @@
 //  ChloroFrame
 //
 //  XPC client for the privileged ChloroFrameHelper daemon.
-//  The helper runs as root (SMJobBless) and does ioctl(SIOCSIFFLAGS) directly.
+//  The helper runs as root (SMAppService daemon) and does ioctl(SIOCSIFFLAGS) directly.
 //  Guaranteed restore: helper's connection invalidationHandler fires on app crash.
 //
 
@@ -25,52 +25,60 @@ final class AWDLSuppressor {
 
     // MARK: - Helper status
 
-    /// True if the helper binary is installed in /Library/PrivilegedHelperTools/.
-    var isHelperInstalled: Bool {
-        FileManager.default.fileExists(
-            atPath: "/Library/PrivilegedHelperTools/\(AWDLSuppressor.helperID)"
-        )
+    /// The SMAppService daemon backed by Contents/Library/LaunchDaemons/<plist>.
+    private var daemonService: SMAppService {
+        SMAppService.daemon(plistName: "\(AWDLSuppressor.helperID).plist")
     }
 
-    // MARK: - Installation (SMJobBless)
+    /// True only when the daemon is registered AND approved by the user.
+    var isHelperInstalled: Bool {
+        daemonService.status == .enabled
+    }
 
-    /// Prompts for admin credentials and installs (or updates) the privileged helper.
-    /// Call from the main thread; the auth dialog is modal.
+    // MARK: - Installation (SMAppService)
+
+    /// Registers the privileged daemon. macOS 13+ replacement for SMJobBless: the
+    /// daemon runs in-place from the app bundle (no copy to /Library/...), and the
+    /// user approves it once under System Settings > General > Login Items & Extensions.
+    /// Throws `.requiresApproval` (and opens that pane) when approval is pending.
+    /// `force: true` re-registers even when status reads `.enabled`. Needed because a
+    /// Debug rebuild re-signs the binary and silently staleness the registered job (status
+    /// stays `.enabled` but launchd won't launch it), so the daemon never answers XPC.
     @MainActor
-    func installHelper() throws {
-        var authItem  = AuthorizationItem(
-            name: kSMRightBlessPrivilegedHelper, valueLength: 0, value: nil, flags: 0
-        )
-        var authRights = AuthorizationRights(count: 1, items: &authItem)
-        var authRef: AuthorizationRef?
+    func installHelper(force: Bool = false) throws {
+        let svc = daemonService
 
-        let createErr = AuthorizationCreate(
-            &authRights, nil,
-            [.interactionAllowed, .preAuthorize, .extendRights],
-            &authRef
-        )
-        guard createErr == errAuthorizationSuccess, let ref = authRef else {
-            throw AWDLHelperError.authorizationFailed(createErr)
+        if !force, svc.status == .enabled {
+            print("[AWDLSuppressor] helper already enabled ✓")
+            return
         }
-        defer { AuthorizationFree(ref, [.destroyRights]) }
 
-        var cfErr: Unmanaged<CFError>?
-        guard SMJobBless(
-            kSMDomainSystemLaunchd,
-            AWDLSuppressor.helperID as CFString,
-            ref, &cfErr
-        ) else {
-            throw cfErr?.takeRetainedValue() ?? AWDLHelperError.blessFailed
+        // Re-registering refreshes an existing registration. We deliberately do NOT call
+        // unregister() first: if the registration was created by a different binary signature
+        // (e.g. a prior build), unregister() is denied with EPERM and wedges the item. When
+        // that happens the user must clear the background item in System Settings manually.
+        try svc.register()
+
+        switch svc.status {
+        case .enabled:
+            print("[AWDLSuppressor] helper registered ✓")
+        case .requiresApproval:
+            print("[AWDLSuppressor] helper needs approval — opening Login Items")
+            SMAppService.openSystemSettingsLoginItems()
+            throw AWDLHelperError.requiresApproval
+        default:
+            throw AWDLHelperError.registrationFailed(svc.status)
         }
-        print("[AWDLSuppressor] helper installed ✓")
     }
 
     // MARK: - Suppress / Restore
 
     func suppress() {
         guard !active else { return }
-        guard UserDefaults.standard.bool(forKey: "suppressAWDLDuringStream") else {
-            print("[AWDLSuppressor] setting disabled — skipping")
+        let wantAWDL = UserDefaults.standard.bool(forKey: "suppressAWDLDuringStream")
+        let wantLoc  = UserDefaults.standard.bool(forKey: "suppressWiFiScansDuringStream")
+        guard wantAWDL || wantLoc else {
+            print("[AWDLSuppressor] both suppressions disabled — skipping")
             return
         }
         guard isHelperInstalled else {
@@ -83,30 +91,43 @@ final class AWDLSuppressor {
             print("[AWDLSuppressor] suppress: XPC error — \(err.localizedDescription)")
         }) as? ChloroFrameHelperProtocol else { return }
 
-        proxy.setAWDL(enabled: false) { [weak self] ok in
-            print("[AWDLSuppressor] suppress → \(ok ? "awdl0 down ✓" : "ioctl failed")")
-            DispatchQueue.main.async { self?.active = ok }
+        active = true
+
+        if wantAWDL {
+            proxy.setAWDL(enabled: false) { ok in
+                print("[AWDLSuppressor] suppress → \(ok ? "awdl0 down ✓" : "ioctl failed")")
+            }
+        }
+        if wantLoc {
+            proxy.setLocationScanSuppressed(enabled: true) { ok in
+                print("[AWDLSuppressor] suppress → \(ok ? "locationd suspended ✓" : "kill failed")")
+            }
         }
     }
 
-    /// Sends the restore command and blocks until the helper confirms (or times out).
-    /// Safe to call from any thread; uses a semaphore so the caller knows restore completed.
+    /// Sends the restore commands and blocks until the helper confirms (or times out).
+    /// Resumes both awdl0 and locationd unconditionally; the helper no-ops whichever
+    /// it didn't actually suppress. Safe to call from any thread.
     func restore() {
         guard active, let conn = connection else { return }
 
-        let sem = DispatchSemaphore(value: 0)
-        let proxy = conn.remoteObjectProxyWithErrorHandler({ err in
+        let group = DispatchGroup()
+        if let proxy = conn.remoteObjectProxyWithErrorHandler({ err in
             print("[AWDLSuppressor] restore: XPC error — \(err.localizedDescription)")
-            sem.signal()
-        }) as? ChloroFrameHelperProtocol
-
-        proxy?.setAWDL(enabled: true) { ok in
-            print("[AWDLSuppressor] restore → \(ok ? "awdl0 up ✓" : "ioctl failed")")
-            sem.signal()
+        }) as? ChloroFrameHelperProtocol {
+            group.enter()
+            proxy.setAWDL(enabled: true) { ok in
+                print("[AWDLSuppressor] restore → \(ok ? "awdl0 up ✓" : "ioctl failed")")
+                group.leave()
+            }
+            group.enter()
+            proxy.setLocationScanSuppressed(enabled: false) { ok in
+                print("[AWDLSuppressor] restore → \(ok ? "locationd resumed ✓" : "kill failed")")
+                group.leave()
+            }
         }
 
-        let result = sem.wait(timeout: .now() + 3.0)
-        if result == .timedOut {
+        if group.wait(timeout: .now() + 3.0) == .timedOut {
             print("[AWDLSuppressor] restore: timed out waiting for helper reply")
         }
 
@@ -185,13 +206,15 @@ extension AWDLSuppressor {
 // MARK: - Errors
 
 enum AWDLHelperError: LocalizedError {
-    case authorizationFailed(OSStatus)
-    case blessFailed
+    case requiresApproval
+    case registrationFailed(SMAppService.Status)
 
     var errorDescription: String? {
         switch self {
-        case .authorizationFailed(let s): return "Authorization failed (OSStatus \(s))"
-        case .blessFailed:                return "SMJobBless failed — check signing and Info.plist"
+        case .requiresApproval:
+            return "Approve ChloroFrame in System Settings > General > Login Items & Extensions, then try again."
+        case .registrationFailed(let status):
+            return "Helper registration failed (status \(status.rawValue))."
         }
     }
 }

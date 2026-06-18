@@ -32,7 +32,10 @@ struct ChloroFrameApp: App {
 class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.appearance = NSAppearance(named: .darkAqua)
-        UserDefaults.standard.register(defaults: ["suppressAWDLDuringStream": true])
+        UserDefaults.standard.register(defaults: [
+            "suppressAWDLDuringStream": true,
+            "suppressWiFiScansDuringStream": true,
+        ])
         NetworkMonitor.shared.start()
         // Defer sizing to the next run loop tick so SwiftUI's initial layout
         // pass completes first — calling setContentSize mid-layout causes the

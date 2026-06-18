@@ -18,6 +18,8 @@ struct SettingsView: View {
     // @AppStorage("lowLatencyMode") private var lowLatencyMode = true
     @AppStorage("enableHDR") private var enableHDR = false
     @AppStorage("useSwiftFEC") private var useSwiftFEC = false
+    @AppStorage("useAppleAudioDecoder") private var useAppleAudioDecoder = false
+    @AppStorage("preferSmootherAudio") private var preferSmootherAudio = false
     @AppStorage("suppressAWDLDuringStream") private var suppressAWDL = true
 
     @State private var awdlReady = AWDLSuppressor.shared.isHelperInstalled
@@ -44,12 +46,20 @@ struct SettingsView: View {
                     .disabled(preferredCodec != "h265")
             }
 
+            section("Audio") {
+                Toggle("Decode Opus with Apple AudioToolbox", isOn: $useAppleAudioDecoder)
+                    .help("Decode the host's Opus audio with macOS's built-in decoder (AudioConverter) instead of the bundled libopus. 100% Apple frameworks. Takes effect on the next connect.")
+
+                Toggle("Prefer smoother audio (trades latency)", isOn: $preferSmootherAudio)
+                    .help("Keep more audio buffered and shrink it gently so jitter bursts don't cause dropouts. Adds a little audio latency. Leave off for lowest latency. Takes effect on the next connect.")
+            }
+
             section("Network") {
                 Toggle("Suppress AWDL During Stream", isOn: $suppressAWDL)
                     .help("Brings awdl0 down while streaming to prevent AirDrop/Handoff from competing for WiFi airtime. Automatically restored when the stream ends.")
 
-                if suppressAWDL && !awdlReady {
-                    awdlSetupRow
+                if suppressAWDL {
+                    if awdlReady { awdlReinstallRow } else { awdlSetupRow }
                 }
 
                 Toggle("Use Swift FEC", isOn: $useSwiftFEC)
@@ -108,6 +118,32 @@ struct SettingsView: View {
                 awdlSetupError = nil
                 do {
                     try AWDLSuppressor.shared.installHelper()
+                    awdlReady = AWDLSuppressor.shared.isHelperInstalled
+                } catch {
+                    awdlSetupError = error.localizedDescription
+                }
+            }
+            .font(.caption)
+            .buttonStyle(.link)
+        }
+    }
+
+    // Shown when the helper reports installed. A Debug rebuild silently staleness the
+    // registered daemon (status stays .enabled but it won't launch), so offer a re-register.
+    private var awdlReinstallRow: some View {
+        HStack(spacing: 6) {
+            if let err = awdlSetupError {
+                Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange).font(.caption)
+                Text(err).font(.caption).foregroundStyle(.red)
+            } else {
+                Image(systemName: "checkmark.circle.fill").foregroundStyle(.green).font(.caption)
+                Text("Helper installed. If AWDL stays active, re-register.").font(.caption).foregroundStyle(.secondary)
+            }
+            Spacer()
+            Button("Re-register…") {
+                awdlSetupError = nil
+                do {
+                    try AWDLSuppressor.shared.installHelper(force: true)
                     awdlReady = AWDLSuppressor.shared.isHelperInstalled
                 } catch {
                     awdlSetupError = error.localizedDescription

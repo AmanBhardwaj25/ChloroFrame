@@ -14,9 +14,8 @@
 import Foundation
 import Network
 import Synchronization
-import os
 
-private let rlog = Logger(subsystem: "com.chloroframe", category: "audio")
+private let rlog = NoopLog()
 
 final class RTPAudioReceiver {
 

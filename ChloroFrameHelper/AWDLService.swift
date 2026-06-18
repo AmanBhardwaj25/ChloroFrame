@@ -24,9 +24,19 @@ final class AWDLService: NSObject, ChloroFrameHelperProtocol {
         set { stateLock.lock(); _suppressed = newValue; stateLock.unlock() }
     }
 
+    // Tracks whether WE suspended locationd, so restore only resumes what we paused.
+    private var _locSuppressed = false
+    private var locSuppressed: Bool {
+        get { stateLock.lock(); defer { stateLock.unlock() }; return _locSuppressed }
+        set { stateLock.lock(); _locSuppressed = newValue; stateLock.unlock() }
+    }
+
     override init() {
         super.init()
         startRouteMonitor()
+        // Defensive: if a previous helper instance died while locationd was
+        // suspended, un-stick it now. SIGCONT on a running process is a no-op.
+        _ = setLocationdSuspended(false)
     }
 
     // MARK: - ChloroFrameHelperProtocol
@@ -41,17 +51,31 @@ final class AWDLService: NSObject, ChloroFrameHelperProtocol {
         reply(ioctl_isUp())
     }
 
+    func setLocationScanSuppressed(enabled: Bool, reply: @escaping (Bool) -> Void) {
+        // enabled == true  → suspend locationd (SIGSTOP), stopping its Wi-Fi scans.
+        // enabled == false → resume locationd (SIGCONT).
+        let ok = setLocationdSuspended(enabled)
+        if ok { locSuppressed = enabled }
+        reply(ok)
+    }
+
     func ping(reply: @escaping () -> Void) { reply() }
 
     // MARK: - Guaranteed restore
 
     /// Called from the XPC connection's invalidationHandler and from SIGTERM.
-    /// Safe to call multiple times — suppressed flag prevents redundant ioctl.
+    /// Safe to call multiple times — the flags prevent redundant syscalls.
     func restoreIfNeeded() {
-        guard suppressed else { return }
-        NSLog("[ChloroHelper] restoring awdl0")
-        _ = ioctl_setInterface(up: true)
-        suppressed = false
+        if suppressed {
+            NSLog("[ChloroHelper] restoring awdl0")
+            _ = ioctl_setInterface(up: true)
+            suppressed = false
+        }
+        if locSuppressed {
+            NSLog("[ChloroHelper] resuming locationd")
+            _ = setLocationdSuspended(false)
+            locSuppressed = false
+        }
     }
 
     // MARK: - ioctl
@@ -106,6 +130,43 @@ final class AWDLService: NSObject, ChloroFrameHelperProtocol {
                 _ = strncpy($0, name, Int(IFNAMSIZ) - 1)
             }
         }
+    }
+
+    // MARK: - locationd suspend / resume
+
+    /// Sends SIGSTOP (suspend) or SIGCONT (resume) to locationd. Runs as root so
+    /// kill() succeeds; SIP protects locationd from debugging, not from signals.
+    private func setLocationdSuspended(_ suspend: Bool) -> Bool {
+        guard let pid = locationdPID() else {
+            NSLog("[ChloroHelper] locationd not found")
+            return false
+        }
+        let sig = suspend ? SIGSTOP : SIGCONT
+        if kill(pid, sig) == 0 {
+            NSLog("[ChloroHelper] locationd \(suspend ? "SIGSTOP" : "SIGCONT") pid \(pid) ✓")
+            return true
+        }
+        NSLog("[ChloroHelper] kill(\(pid), \(suspend ? "STOP" : "CONT")) failed errno=\(errno)")
+        return false
+    }
+
+    private func locationdPID() -> pid_t? {
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: "/usr/bin/pgrep")
+        proc.arguments = ["-x", "locationd"]
+        let pipe = Pipe()
+        proc.standardOutput = pipe
+        do { try proc.run() } catch {
+            NSLog("[ChloroHelper] pgrep launch failed: \(error)")
+            return nil
+        }
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        proc.waitUntilExit()
+        guard let first = String(data: data, encoding: .utf8)?
+                .split(separator: "\n").first,
+              let pid = pid_t(first.trimmingCharacters(in: .whitespaces))
+        else { return nil }
+        return pid
     }
 
     // MARK: - Route-socket re-suppression monitor

@@ -91,19 +91,25 @@ Implemented, but still alpha:
   HDR.
 - Metal rendering with NV12/P010 texture paths and display-link frame pacing.
 - RTP video assembly with FEC recovery.
-- Opus audio decode through vendored libopus and CoreAudio pull playback, with an
-  adaptive jitter buffer, clock-drift correction, and waveform-repeat underrun
-  concealment.
+- Opus audio decode (vendored libopus by default, or macOS's built-in AudioToolbox
+  decoder as an opt-in, 100%-Apple path) through CoreAudio pull playback, with an
+  adaptive jitter buffer, clock-drift correction, crossfaded (click-free) buffer
+  corrections, waveform-repeat underrun concealment, and Opus FEC/PLC gap concealment.
+- Optional Wi-Fi airtime suppression while streaming via a privileged helper: brings
+  `awdl0` down and reversibly suspends locationd's periodic positioning scan (both
+  restored on stop), to reduce the periodic Wi-Fi stalls that cause audio dropouts.
 - Keyboard and mouse input over the Apollo control channel, with custom remapping of
   the fn/control/option/command modifier keys, an fn-layer latch, and a reserved
   ⌃⌥⌘ control-prefix (held: hold it to reveal an in-stream controls overlay).
 
 Known gaps:
 
-- AWDL suppression is broken and should be treated as a TODO. Do not rely on it.
+- AWDL + locationd suppression now works, but requires a correctly signed helper that
+  the user approves once in System Settings. During development, Debug rebuilds re-sign
+  the binary and can staleness the helper registration (re-register from Settings to fix).
 - Audio output-device and config-change handling (AVAudioEngine reconfiguration)
-  and LAN audio encryption are not implemented. Rare multi-second audio-only
-  delivery stalls remain, tied to the AWDL gap above.
+  and LAN audio encryption are not implemented. Some delivery jitter remains on noisy
+  Wi-Fi; it is now concealed click-free rather than eliminated.
 - Gamepad, touch, and pen input are not implemented yet.
 - Bonjour/mDNS host discovery is still a placeholder.
 
@@ -155,7 +161,8 @@ and requirement strings in:
 - `ChloroFrame/Video/`: VideoToolbox decode and Metal presentation.
 - `ChloroFrame/Audio/`: Opus decode and CoreAudio playback.
 - `ChloroFrame/Input/`: keyboard and mouse input translation.
-- `ChloroFrameHelper/`: privileged helper for future AWDL suppression work.
+- `ChloroFrameHelper/`: privileged SMAppService daemon that brings `awdl0` down and
+  suspends/resumes locationd during a stream (Wi-Fi airtime suppression).
 - `clear_pairing.sh`: local utility for clearing stored pairing credentials.
 
 ## License
