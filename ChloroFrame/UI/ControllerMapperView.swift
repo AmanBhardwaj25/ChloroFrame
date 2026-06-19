@@ -364,7 +364,8 @@ struct ControllerMapperView: View {
                     Text(KeyToken.summary(keys)).foregroundStyle(Color(red: 0.70, green: 0.52, blue: 0.0))
                     Button("Clear") { pending?.keys = [] }
                 } else {
-                    Text("Click keys on the host keyboard below (e.g. Alt + Tab).").foregroundStyle(.secondary)
+                    Text("Tap one key for a single-key bind, or several for a combo (e.g. Alt + Tab).")
+                        .foregroundStyle(.secondary)
                 }
                 Spacer()
             }
