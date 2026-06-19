@@ -1,0 +1,534 @@
+//
+//  ControllerMapperView.swift
+//  ChloroFrame
+//
+//  Controller test + remapper page. Jobs right now:
+//    1. Diagnostics: which controllers macOS sees, what they expose, a live readout of every
+//       input (with Apple's per-element SF Symbol glyph), and a raw-HID scan for buttons
+//       GameController hides.
+//    2. Remapping: bind a source chord (one or more controller buttons held together, e.g.
+//       Home + X) to a target combo, either host gamepad buttons or a host keyboard chord
+//       (e.g. Alt+Tab). Bindings persist via ControllerBindingStore but are NOT yet sent to
+//       the stream.
+//
+
+import SwiftUI
+
+struct ControllerMapperView: View {
+    @Environment(\.dismiss) private var dismiss
+    @StateObject private var input = ControllerInput()
+    @StateObject private var hid = HIDProbe()
+    @StateObject private var chord = HostChordCapture()
+
+    @State private var bindings: [ControllerBinding] = ControllerBindingStore.load()
+    @State private var pending: Pending?
+
+    // Learn-flow state (Map extra buttons).
+    @State private var learnedButtons: [LearnedButton] = []
+    @State private var learnDeviceKey: String?
+    @State private var pendingLabel = ""
+
+    // A binding being authored: the source chord picked from the known-buttons pool, plus the
+    // target the user is building.
+    private struct Pending {
+        var sources: [BindingSource] = []
+        var kind: Kind = .gamepad
+        var gamepad: Set<GamepadButton> = []
+        var keys: [String] = []
+        enum Kind: String, CaseIterable { case gamepad = "Gamepad", keyboard = "Keyboard" }
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    header
+                    connectedSection
+                    liveSection
+                    extraButtonsSection
+                    bindingsSection
+                    rawHIDSection
+                }
+                .padding(20)
+            }
+            Divider()
+            footer
+                .padding(.horizontal, 20)
+                .padding(.vertical, 12)
+        }
+        .frame(width: 560, height: 680)
+        .onAppear { hid.lastGCActivity = { input.lastEvent?.at }; hid.start(); loadLearned() }
+        .onChange(of: chord.tokens) { _, new in if !new.isEmpty { pending?.keys = new } }
+        .onChange(of: hid.devices.map(\.id)) { _, _ in loadLearned() }
+        .onChange(of: hid.learnCandidate?.bitmask) { _, _ in pendingLabel = "" }
+        .onDisappear { input.stopListening(); hid.stop(); chord.stop() }
+    }
+
+    private var header: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("Controller").font(.headline)
+            Text("Connect a controller, see what macOS exposes, and bind button combos to gamepad or keyboard chords. Bindings are saved but not yet sent to the host.")
+                .font(.caption).foregroundStyle(.secondary)
+        }
+    }
+
+    // MARK: - Connected controllers
+
+    private var connectedSection: some View {
+        section("Connected") {
+            if input.controllers.isEmpty {
+                Label("No controller detected. Pair one over Bluetooth or plug it in.",
+                      systemImage: "gamecontroller")
+                    .font(.caption).foregroundStyle(.secondary)
+            } else {
+                if input.controllers.count > 1 {
+                    Text("Select which controller to view and remap.")
+                        .font(.caption2).foregroundStyle(.secondary)
+                }
+                ForEach(input.controllers) { c in
+                    let selected = input.selectedID == c.id
+                    HStack(alignment: .top, spacing: 8) {
+                        Image(systemName: selected ? "largecircle.fill.circle" : "circle")
+                            .foregroundStyle(selected ? Color.accentColor : .secondary)
+                        VStack(alignment: .leading, spacing: 2) {
+                            HStack(spacing: 6) {
+                                Image(systemName: "gamecontroller.fill")
+                                    .foregroundStyle(selected ? .green : .secondary)
+                                Text(c.displayName).fontWeight(.semibold)
+                                Text("(\(c.profileKind))").foregroundStyle(.secondary)
+                            }
+                            Text("\(c.category) · \(c.elementCount) elements · " + capabilities(c))
+                                .font(.caption2).foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                    }
+                    .contentShape(Rectangle())
+                    .onTapGesture { input.select(c.id) }
+                }
+            }
+        }
+    }
+
+    private func capabilities(_ c: ControllerInput.ControllerInfo) -> String {
+        var parts: [String] = []
+        parts.append(c.hasMotion ? "motion" : "no motion")
+        if c.hasHaptics { parts.append("rumble") }
+        if c.hasLight { parts.append("lightbar") }
+        if c.hasBattery { parts.append("battery") }
+        return parts.joined(separator: ", ")
+    }
+
+    // MARK: - Live readout
+
+    private var liveSection: some View {
+        section("Live input") {
+            if let e = input.lastEvent {
+                HStack(spacing: 8) {
+                    if let sym = e.symbolName { Image(systemName: sym).font(.title2) }
+                    Text(e.elementName).fontWeight(.semibold)
+                    Spacer()
+                    Text(String(format: "%.2f", e.value))
+                        .font(.system(.body, design: .monospaced))
+                        .foregroundStyle(e.pressed ? .green : .secondary)
+                }
+            } else {
+                Text("Press anything on the controller…")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+
+            if !input.liveValues.isEmpty {
+                Divider()
+                ForEach(input.liveValues.sorted(by: { $0.key < $1.key }), id: \.key) { name, value in
+                    HStack {
+                        Text(name).font(.caption)
+                        Spacer()
+                        ProgressView(value: Double(min(max(value, 0), 1)))
+                            .frame(width: 120)
+                    }
+                }
+            }
+        }
+    }
+
+    // MARK: - Bindings
+
+    private var bindingsSection: some View {
+        section("Remaps") {
+            if bindings.isEmpty {
+                Text("No remaps yet. Click “Add binding”, pick one or more known buttons as the trigger, then choose what they do.")
+                    .font(.caption).foregroundStyle(.secondary)
+            } else {
+                ForEach(bindings) { b in
+                    HStack(spacing: 6) {
+                        Text(b.sourceSummary).font(.callout).fontWeight(.medium)
+                        Image(systemName: "arrow.right").foregroundStyle(.secondary).font(.caption)
+                        Text(b.target.summary).font(.callout)
+                            .foregroundStyle(Color(red: 0.70, green: 0.52, blue: 0.0))
+                        Spacer()
+                        Button(role: .destructive) { delete(b) } label: { Image(systemName: "trash") }
+                            .buttonStyle(.borderless)
+                    }
+                }
+            }
+
+            if pending != nil {
+                pendingEditor
+            } else {
+                HStack {
+                    Button("Add binding") { pending = Pending() }
+                        .disabled(input.knownButtons.isEmpty && learnedButtons.isEmpty)
+                    if !bindings.isEmpty {
+                        Button("Clear all") { bindings = []; ControllerBindingStore.save(bindings) }
+                    }
+                    Spacer()
+                }
+                .font(.caption)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var pendingEditor: some View {
+        if let p = pending {
+            Divider()
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Source: tap one button, or several for a combo").font(.caption2).foregroundStyle(.secondary)
+                let columns = [GridItem(.adaptive(minimum: 92), spacing: 6)]
+                LazyVGrid(columns: columns, alignment: .leading, spacing: 6) {
+                    ForEach(input.knownButtons, id: \.self) { name in
+                        sourceChip(.gamepad(name: name), label: name, system: nil)
+                    }
+                    ForEach(learnedButtons) { lb in
+                        sourceChip(.learned(deviceKey: learnDeviceKey ?? "", bitKey: lb.bitKey, label: lb.label),
+                                   label: lb.label, system: "button.programmable")
+                    }
+                }
+                if !p.sources.isEmpty {
+                    Text("Trigger: " + p.sources.map(\.displayName).joined(separator: " + "))
+                        .font(.caption).foregroundStyle(Color(red: 0.70, green: 0.52, blue: 0.0))
+                }
+
+                Divider()
+                Text("Target").font(.caption2).foregroundStyle(.secondary)
+                Picker("Target", selection: pendingKind) {
+                    ForEach(Pending.Kind.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+                }
+                .pickerStyle(.segmented).labelsHidden().frame(width: 220)
+
+                if p.kind == .gamepad { gamepadPicker } else { keyboardPicker }
+
+                HStack {
+                    Button("Cancel") { cancelPending() }
+                    Spacer()
+                    Button("Save") { savePending() }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(!canSavePending)
+                }
+                .font(.caption)
+            }
+        }
+    }
+
+    private func sourceChip(_ source: BindingSource, label: String, system: String?) -> some View {
+        let on = pending?.sources.contains(source) ?? false
+        return HStack(spacing: 3) {
+            if let system { Image(systemName: system).font(.caption2) }
+            Text(label).font(.caption2).lineLimit(1)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 4)
+        .background(RoundedRectangle(cornerRadius: 5)
+            .fill(on ? Color.accentColor.opacity(0.4) : Color.gray.opacity(0.15)))
+        .contentShape(Rectangle())
+        .onTapGesture { toggleSource(source) }
+    }
+
+    private var gamepadPicker: some View {
+        let columns = [GridItem(.adaptive(minimum: 62), spacing: 6)]
+        return LazyVGrid(columns: columns, alignment: .leading, spacing: 6) {
+            ForEach(GamepadButton.allCases) { btn in
+                let on = pending?.gamepad.contains(btn) ?? false
+                Text(btn.label)
+                    .font(.caption2)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 4)
+                    .background(RoundedRectangle(cornerRadius: 5)
+                        .fill(on ? Color.accentColor.opacity(0.4) : Color.gray.opacity(0.15)))
+                    .contentShape(Rectangle())
+                    .onTapGesture { toggleGamepad(btn) }
+            }
+        }
+    }
+
+    private var keyboardPicker: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                Button(chord.capturing ? "Press a chord…" : "Capture keys") {
+                    chord.capturing ? chord.stop() : chord.start()
+                }
+                if let keys = pending?.keys, !keys.isEmpty {
+                    Text(keys.map(KeyToken.label).joined(separator: " + "))
+                        .foregroundStyle(Color(red: 0.70, green: 0.52, blue: 0.0))
+                    Button("Clear") { pending?.keys = []; chord.clear() }
+                }
+                Spacer()
+            }
+            .font(.caption)
+            Text("Press the keys on your Mac keyboard (e.g. Alt+Tab). They are sent to the host. Esc cancels.")
+                .font(.caption2).foregroundStyle(.secondary)
+        }
+    }
+
+    // MARK: - Extra buttons (learn flow)
+
+    private var extraButtonsSection: some View {
+        section("Extra buttons") {
+            Text("Buttons macOS does not recognize (back paddles, etc.). Capture one, give it a label, then it becomes bindable below.")
+                .font(.caption2).foregroundStyle(.secondary)
+
+            if !learnedButtons.isEmpty {
+                ForEach(learnedButtons) { lb in
+                    HStack(spacing: 6) {
+                        Image(systemName: "button.programmable").foregroundStyle(.secondary)
+                        Text(lb.label).fontWeight(.medium)
+                        Text(String(format: "rpt %d · byte %d · 0x%02X", lb.reportID, lb.byteIndex, lb.bitmask))
+                            .font(.caption2).foregroundStyle(.secondary)
+                        Spacer()
+                        Button(role: .destructive) { deleteLearned(lb) } label: { Image(systemName: "trash") }
+                            .buttonStyle(.borderless)
+                    }
+                }
+            }
+
+            if let cand = hid.learnCandidate {
+                Divider()
+                HStack(spacing: 6) {
+                    Image(systemName: "dot.radiowaves.left.and.right").foregroundStyle(.green)
+                    Text("Captured: \(cand.deviceName)")
+                    Text(String(format: "rpt %d · byte %d · 0x%02X", cand.reportID, cand.byteIndex, cand.bitmask))
+                        .font(.caption2).foregroundStyle(.secondary)
+                }
+                .font(.caption)
+                HStack {
+                    TextField("Label (e.g. Back Paddle 1)", text: $pendingLabel)
+                        .textFieldStyle(.roundedBorder)
+                        .onSubmit { saveLearned() }
+                    Button("Save") { saveLearned() }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(!canSaveLearned)
+                    Button("Discard") { hid.clearCandidate(); pendingLabel = "" }
+                }
+                .font(.caption)
+                if !pendingLabel.isEmpty, isDuplicateLabel {
+                    Text("That label is already used.").font(.caption2).foregroundStyle(.red)
+                }
+            } else {
+                HStack {
+                    Button(hid.learning ? "Press an unmapped button…" : "Map extra buttons") {
+                        if hid.learning { hid.stopLearning() } else { startLearning() }
+                    }
+                    Spacer()
+                }
+                .font(.caption)
+                if hid.learning {
+                    Text("Press the extra button once. Do not touch the sticks, triggers, or face buttons.")
+                        .font(.caption2).foregroundStyle(.green)
+                }
+                if let err = hid.openError {
+                    Label(err, systemImage: "exclamationmark.triangle")
+                        .font(.caption2).foregroundStyle(.orange)
+                }
+            }
+        }
+    }
+
+    // MARK: - Raw HID (advanced)
+
+    private var rawHIDSection: some View {
+        section("Raw HID (advanced)") {
+            Text("Sees buttons below GameController, including ones it hides. Start it, then press each control: if a back paddle lights up a usage that no face button does, it is recoverable.")
+                .font(.caption2).foregroundStyle(.secondary)
+
+            HStack {
+                Button(hid.running ? "Stop" : "Start raw scan") {
+                    hid.running ? hid.stop() : hid.start()
+                }
+                if hid.running {
+                    Button(hid.logging ? "Stop logging" : "Log to session.log") {
+                        hid.setLogging(!hid.logging)
+                    }
+                }
+                if hid.running, !hid.deviceNames.isEmpty {
+                    Text(hid.deviceNames.joined(separator: ", "))
+                        .font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                }
+                Spacer()
+            }
+            .font(.caption)
+
+            if hid.logging {
+                Text("Logging presses to logs/session.log. Press each face button and each paddle a few times.")
+                    .font(.caption2).foregroundStyle(.green)
+            }
+
+            if let err = hid.openError {
+                Label(err, systemImage: "exclamationmark.triangle")
+                    .font(.caption2).foregroundStyle(.orange)
+            }
+
+            if hid.running {
+                if hid.usages.isEmpty {
+                    Text("No named buttons seen yet. Press something on the controller.")
+                        .font(.caption2).foregroundStyle(.secondary)
+                } else {
+                    let columns = [GridItem(.adaptive(minimum: 86), spacing: 6)]
+                    LazyVGrid(columns: columns, alignment: .leading, spacing: 6) {
+                        ForEach(hid.usages) { u in
+                            Text("\(HIDProbe.pageName(u.page)) \(u.usage)")
+                                .font(.system(.caption2, design: .monospaced))
+                                .padding(.horizontal, 6).padding(.vertical, 3)
+                                .background(RoundedRectangle(cornerRadius: 5)
+                                    .fill(u.pressed ? Color.green.opacity(0.35) : Color.gray.opacity(0.15)))
+                        }
+                    }
+                }
+
+                if !hid.reports.isEmpty {
+                    Divider()
+                    Text("Raw reports — keep sticks centered, tap a paddle, watch for an orange byte. Dimmed bytes change constantly (counter / motion / sticks) and are ignored.")
+                        .font(.caption2).foregroundStyle(.secondary)
+                    ForEach(hid.reports) { r in
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text("\(r.device) · report \(r.reportID) · \(r.bytes.count) bytes")
+                                .font(.caption2).foregroundStyle(.secondary)
+                            let columns = [GridItem(.adaptive(minimum: 24), spacing: 3)]
+                            LazyVGrid(columns: columns, alignment: .leading, spacing: 3) {
+                                ForEach(Array(r.bytes.enumerated()), id: \.offset) { i, byte in
+                                    let lit = r.changed.contains(i)
+                                    let noisy = r.noisy.contains(i)
+                                    Text(String(format: "%02X", byte))
+                                        .font(.system(size: 10, design: .monospaced))
+                                        .foregroundStyle(noisy ? .secondary : .primary)
+                                        .opacity(noisy ? 0.4 : 1)
+                                        .padding(.vertical, 2).frame(maxWidth: .infinity)
+                                        .background(RoundedRectangle(cornerRadius: 3)
+                                            .fill(lit ? Color.orange.opacity(0.7) : Color.gray.opacity(0.12)))
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private var footer: some View {
+        HStack {
+            Label("Remaps are not yet sent to the host. This page is for authoring and testing.",
+                  systemImage: "info.circle")
+                .font(.caption2).foregroundStyle(.secondary)
+            Spacer()
+            Button("Done") { dismiss() }.keyboardShortcut(.defaultAction)
+        }
+    }
+
+    // MARK: - Actions
+
+    private var pendingKind: Binding<Pending.Kind> {
+        Binding(get: { pending?.kind ?? .gamepad }, set: { pending?.kind = $0 })
+    }
+
+    private var canSavePending: Bool {
+        guard let p = pending, !p.sources.isEmpty else { return false }
+        return p.kind == .gamepad ? !p.gamepad.isEmpty : !p.keys.isEmpty
+    }
+
+    private func toggleSource(_ s: BindingSource) {
+        guard pending != nil else { return }
+        if let i = pending!.sources.firstIndex(of: s) { pending!.sources.remove(at: i) }
+        else { pending!.sources.append(s) }
+    }
+
+    private func toggleGamepad(_ b: GamepadButton) {
+        guard pending != nil else { return }
+        if pending!.gamepad.contains(b) { pending!.gamepad.remove(b) } else { pending!.gamepad.insert(b) }
+    }
+
+    private func savePending() {
+        guard let p = pending else { return }
+        let target: BindingTarget = p.kind == .gamepad
+            ? .gamepad(GamepadButton.allCases.filter { p.gamepad.contains($0) })   // stable order
+            : .keyboard(p.keys)
+        bindings.append(ControllerBinding(sources: p.sources, target: target))
+        ControllerBindingStore.save(bindings)
+        cancelPending()
+    }
+
+    private func cancelPending() {
+        chord.stop()
+        pending = nil
+    }
+
+    private func delete(_ b: ControllerBinding) {
+        bindings.removeAll { $0.id == b.id }
+        ControllerBindingStore.save(bindings)
+    }
+
+    // MARK: - Learn flow actions
+
+    private var isDuplicateLabel: Bool {
+        let l = pendingLabel.trimmingCharacters(in: .whitespaces).lowercased()
+        return learnedButtons.contains { $0.label.lowercased() == l }
+    }
+
+    private var canSaveLearned: Bool {
+        !pendingLabel.trimmingCharacters(in: .whitespaces).isEmpty && !isDuplicateLabel
+    }
+
+    private func loadLearned() {
+        learnDeviceKey = hid.devices.first?.id
+        learnedButtons = learnDeviceKey.map { LearnedButtonStore.load(deviceKey: $0) } ?? []
+    }
+
+    private func startLearning() {
+        if !hid.running { hid.start() }
+        loadLearned()
+        hid.startLearning(skip: Set(learnedButtons.map(\.bitKey)))
+    }
+
+    private func saveLearned() {
+        guard canSaveLearned, let cand = hid.learnCandidate else { return }
+        let key = cand.deviceKey
+        var list = LearnedButtonStore.load(deviceKey: key)
+        list.append(LearnedButton(label: pendingLabel.trimmingCharacters(in: .whitespaces),
+                                  reportID: cand.reportID, byteIndex: cand.byteIndex, bitmask: cand.bitmask))
+        LearnedButtonStore.save(list, deviceKey: key)
+        learnDeviceKey = key
+        learnedButtons = list
+        hid.clearCandidate()
+        pendingLabel = ""
+    }
+
+    private func deleteLearned(_ lb: LearnedButton) {
+        guard let key = learnDeviceKey else { return }
+        learnedButtons.removeAll { $0.id == lb.id }
+        LearnedButtonStore.save(learnedButtons, deviceKey: key)
+    }
+
+    // Matches SettingsView's grouped section styling.
+    @ViewBuilder
+    private func section<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(title).font(.subheadline.weight(.semibold)).foregroundStyle(.secondary)
+            GroupBox {
+                VStack(alignment: .leading, spacing: 10) { content() }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(4)
+            }
+        }
+    }
+}
+
+#Preview {
+    ControllerMapperView()
+}
