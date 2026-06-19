@@ -63,7 +63,7 @@ final class HIDProbe: ObservableObject {
         let reportID: Int
         let byteIndex: Int
         let bitmask: UInt8
-        var deviceKey: String { LearnedButtonStore.deviceKey(vendorID: vendorID, productID: productID) }
+        var deviceKey: String { ControllerConfigStore.deviceKey(vendorID: vendorID, productID: productID) }
     }
 
     @Published private(set) var running = false
@@ -326,7 +326,7 @@ final class HIDProbe: ObservableObject {
             let name = (IOHIDDeviceGetProperty(dev, kIOHIDProductKey as CFString) as? String) ?? "Controller"
             let vid = (IOHIDDeviceGetProperty(dev, kIOHIDVendorIDKey as CFString) as? Int) ?? 0
             let pid = (IOHIDDeviceGetProperty(dev, kIOHIDProductIDKey as CFString) as? Int) ?? 0
-            return DeviceID(id: LearnedButtonStore.deviceKey(vendorID: vid, productID: pid),
+            return DeviceID(id: ControllerConfigStore.deviceKey(vendorID: vid, productID: pid),
                             name: name, vendorID: vid, productID: pid)
         }.sorted { $0.name < $1.name }
         deviceNames = devices.map(\.name)

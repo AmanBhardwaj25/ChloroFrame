@@ -97,23 +97,8 @@ struct ControllerBinding: Codable, Identifiable, Equatable {
     var sourceSummary: String { sources.map(\.displayName).joined(separator: " + ") }
 }
 
-struct ControllerBindingStore {
-    private static let defaultsKey = "controllerBindings"
-
-    static func load(_ defaults: UserDefaults = .standard) -> [ControllerBinding] {
-        guard let data = defaults.data(forKey: defaultsKey),
-              let list = try? JSONDecoder().decode([ControllerBinding].self, from: data) else { return [] }
-        return list
-    }
-
-    static func save(_ bindings: [ControllerBinding], _ defaults: UserDefaults = .standard) {
-        if bindings.isEmpty {
-            defaults.removeObject(forKey: defaultsKey)
-        } else if let data = try? JSONEncoder().encode(bindings) {
-            defaults.set(data, forKey: defaultsKey)
-        }
-    }
-}
+// Bindings and learned buttons now persist inside ControllerConfig (per-controller JSON file),
+// see ControllerConfigStore.
 
 // Display labels for host key tokens. The token vocabulary matches KeyBindingStore (ctrl/alt/
 // win/shift, letters, f-keys) plus a few extras a controller chord commonly wants. Resolving a

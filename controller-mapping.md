@@ -6,6 +6,25 @@ decisions/feasibility as we go. Started 2026-06-18.*
 *Companion to keyboard-remapping.md. Where the two overlap (emitting host keyboard input),
 this doc reuses the keyboard packet path described there.*
 
+## Implementation status (2026-06-19)
+
+Built and verified end-to-end against a live Apollo host:
+
+- Opt-in controller setup window (Settings -> Input -> Controller), resizable.
+- Discovery + live readout + raw-HID diagnostic (GameController + IOHIDManager).
+- Learn flow: identify an unknown extra button (single rising bit, no GameController event),
+  label it; persisted per controller.
+- Rebinds: source chord of macOS-known and/or learned buttons -> a host gamepad combo or a host
+  keyboard chord (chosen on a virtual on-screen Windows keyboard).
+- Per-controller JSON config files (`<VID>_<PID>.json`) with import / remove (unlink, file stays).
+- Runtime: a standard controller drives the host (default passthrough); rebinds apply, including
+  learned/paddle sources read via raw HID at runtime. Confirmed: a paddle -> A, and a paddle ->
+  Alt+Tab that alt-tabs only the host (no macOS interception).
+
+Not yet done: controller motion/touchpad/rumble/battery, multiple simultaneous controllers,
+controller-arrival capabilities detail, and the chord-tap delay nuance (combos use plain
+all-held + consumption today).
+
 ## Goal
 
 Make the extra and odd buttons on real controllers useful. Games are built for a standard
@@ -262,29 +281,31 @@ controller API on macOS (Apple Developer Forums thread 812774). Every working ma
 
 ---
 
-## 10. Components
+## 10. Components (as built)
 
-- **ControllerInput** (exists): GameController read/observe layer. Discovery, live values,
-  listen, multi-controller selection. Source of macOS-known buttons + the GC-event signal the
-  learn flow uses to filter known inputs.
-- **HIDProbe / raw-HID reader** (exists as probe; productionize): `IOHIDManager` input-report
-  reader. Powers the learn flow (capture) and, at runtime, reads learned-button bits. Needs to
-  also expose `vendorID`/`productID` for device scoping.
-- **LearnedButton + LearnedButtonStore** (new): per-device learned buttons
-  `{id, label, reportID, byteIndex, bitmask}`, keyed by `vendorID+productID`, persisted as JSON.
-  Independent of bindings (a learned button can exist with no binding).
-- **ControllerBinding + store** (exists, extend): a binding's `sources` already accept multiple
-  elements; extend a source element to be either a GC element ref or a learned-button ref.
-- **ControllerTranslator** (new, the rebind engine): consumes GC state + learned-button bits +
-  bindings -> host gamepad state (level) + keyboard edges (edge), with consumed-source
-  suppression, chord resolution, and stuck-input safety.
-- **Gamepad packet builder** (new, in-stream step): encodes host gamepad state into the
-  `MULTI_CONTROLLER` packet + controller-arrival announcement via `transport.sendInput`.
-- **Keyboard send primitive** (exists, refactor): factor InputHandler.sendRawKey so the
-  translator can call it with ref-counted held-key bookkeeping.
-- **Virtual host keyboard view** (new): the 2D on-screen keyboard picker (section 7, option b)
-  for choosing host keys. Supersedes the earlier Mac-keyboard chord capture (`HostChordCapture`),
-  which was an option-a approach and will be removed when this lands.
+- **ControllerInput** — GameController read/observe layer: discovery, live values, listen, combo
+  capture, multi-controller selection, and the selected pad's macOS-known buttons. Its
+  `lastEvent.at` is the GC-activity signal the learn flow uses to filter known inputs.
+- **HIDProbe** — `IOHIDManager` diagnostic in the setup page (element scan + raw-report dump with
+  analog-noise filtering) and the **learn flow** (single rising bit, no GC event, skip
+  already-learned). Exposes device VID/PID.
+- **RawHIDBitReader** — slim runtime `IOHIDManager` reader (separate from HIDProbe) that keeps the
+  latest report bytes per reportID so the translator can poll learned-button bits while streaming.
+- **ControllerConfig + ControllerConfigStore** — per-controller JSON file `<VID>_<PID>.json`
+  holding hardware id, names, display name, macOS buttons, learned buttons, and bindings. A
+  registry (UserDefaults) links a device's hardware id to its file path; default dir is
+  `~/Library/Application Support/ChloroFrame/Controllers`. Supports import (link any file) and
+  remove (unlink; file stays). Replaces the old UserDefaults stores.
+- **ControllerBinding / BindingSource / BindingTarget / GamepadButton / KeyToken** — the binding
+  model. A `BindingSource` is `.gamepad(name:)` (GC element) or `.learned(...)` (raw-HID button).
+- **ControllerWire** — exact host wire encoders (MULTI_CONTROLLER + arrival), GamepadButton ->
+  host flag map, key token -> Win32 VK map, channels. Transcribed from moonlight-common-c.
+- **ControllerTranslator** — the rebind engine. Polls GameController + RawHIDBitReader at 120 Hz,
+  applies bindings (largest-combo-first, consumed sources), builds the level-based gamepad state
+  (sent on change) and edge-based keyboard events (ref-counted). Created next to InputHandler in
+  HostConnectionView, stored on StreamState, started on activate and released/stopped on teardown.
+- **HostKeyboardView** — the 2D on-screen Windows keyboard picker (section 7, option b). Replaced
+  the Mac-keyboard chord capture (`HostChordCapture`, removed).
 
 ---
 
@@ -334,24 +355,27 @@ primitive is factored out.
   - Holding a keyboard-bound source lets host auto-repeat run (cycling Alt+Tab). Chosen behavior.
   - Media virtual-keys through the host keyboard injection are assumed to work; verify on Apollo.
 
-Nothing requires host changes. None of it is wired into the stream yet.
+Nothing requires host changes. This is now wired into the stream and verified on a live host.
 
 ---
 
-## 14. Phased plan
+## 14. Phased plan (all done)
 
-1. **Setup page + known-buttons model (no stream).** Opt-in page listing macOS-known buttons.
-2. **Learn flow + LearnedButtonStore (no stream).** "Map extra buttons": raw-HID listen with the
-   section-3 filters, single-bit capture, label prompt, device-scoped persistence. Testable on the
-   Flydigi end-to-end (capture and label the four paddles).
-3. **Binding authoring (no stream).** Extend the source model to reference learned buttons; author
-   gamepad-combo / keyboard-chord targets, including mixed combos (Paddle 1 + A).
-4. **Refactor the keyboard send primitive** out of InputHandler (ref-counted held keys).
-5. **ControllerTranslator.** GC state + learned bits + bindings -> host gamepad state (level) +
-   keyboard edges (edge), with chord resolution, consumed-source suppression, stuck-input safety.
-6. **Gamepad wire path.** Controller-arrival + `MULTI_CONTROLLER` encoder via `transport.sendInput`.
-7. **Verify on host.** Combos, keyboard chords, media keys (mute), learned-button bindings on a
-   live Apollo host; capture findings here.
+1. **[done] Setup page + known-buttons model.** Opt-in window listing macOS-known buttons.
+2. **[done] Learn flow.** "Map extra buttons": raw-HID single-bit capture with section-3 filters,
+   label prompt, per-controller persistence. Verified on the Flydigi paddles.
+3. **[done] Binding authoring.** Sources reference macOS-known and/or learned buttons; targets are
+   gamepad combos or host keyboard chords, including mixed combos (Paddle 1 + A).
+4. **[done, via ControllerWire] Keyboard send.** The translator builds `NV_KEYBOARD_PACKET` via
+   ControllerWire with ref-counted held keys (rather than refactoring InputHandler.sendRawKey).
+5. **[done] ControllerTranslator.** GC state + learned bits + bindings -> gamepad state (level) +
+   keyboard edges (edge), consumed-source suppression, stuck-input safety.
+6. **[done] Gamepad wire path.** Arrival + `MULTI_CONTROLLER` encoder via `transport.sendInput`.
+7. **[done] Verified on host.** Standard pad, gamepad/keyboard rebinds, and paddle bindings
+   (paddle -> A, paddle -> Alt+Tab without macOS interception) confirmed on a live Apollo host.
+
+Remaining/next: persistence robustness polish, motion/touchpad/rumble/battery, multiple
+controllers, controller-arrival capabilities, and the chord-tap delay nuance.
 
 ---
 
