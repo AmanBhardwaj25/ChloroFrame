@@ -18,7 +18,6 @@ struct ControllerMapperView: View {
     @Environment(\.dismiss) private var dismiss
     @StateObject private var input = ControllerInput()
     @StateObject private var hid = HIDProbe()
-    @StateObject private var chord = HostChordCapture()
 
     @State private var bindings: [ControllerBinding] = ControllerBindingStore.load()
     @State private var pending: Pending?
@@ -56,12 +55,12 @@ struct ControllerMapperView: View {
                 .padding(.horizontal, 20)
                 .padding(.vertical, 12)
         }
-        .frame(width: 560, height: 680)
+        .frame(minWidth: 460, idealWidth: 560, maxWidth: .infinity,
+               minHeight: 420, idealHeight: 680, maxHeight: .infinity)
         .onAppear { hid.lastGCActivity = { input.lastEvent?.at }; hid.start(); loadLearned() }
-        .onChange(of: chord.tokens) { _, new in if !new.isEmpty { pending?.keys = new } }
         .onChange(of: hid.devices.map(\.id)) { _, _ in loadLearned() }
         .onChange(of: hid.learnCandidate?.bitmask) { _, _ in pendingLabel = "" }
-        .onDisappear { input.stopListening(); hid.stop(); chord.stop() }
+        .onDisappear { input.stopListening(); hid.stop() }
     }
 
     private var header: some View {
@@ -263,19 +262,20 @@ struct ControllerMapperView: View {
     private var keyboardPicker: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 8) {
-                Button(chord.capturing ? "Press a chord…" : "Capture keys") {
-                    chord.capturing ? chord.stop() : chord.start()
-                }
                 if let keys = pending?.keys, !keys.isEmpty {
-                    Text(keys.map(KeyToken.label).joined(separator: " + "))
+                    Text(KeyToken.summary(keys))
                         .foregroundStyle(Color(red: 0.70, green: 0.52, blue: 0.0))
-                    Button("Clear") { pending?.keys = []; chord.clear() }
+                    Button("Clear") { pending?.keys = [] }
+                } else {
+                    Text("Click keys on the host keyboard below (e.g. Alt + Tab).")
+                        .foregroundStyle(.secondary)
                 }
                 Spacer()
             }
             .font(.caption)
-            Text("Press the keys on your Mac keyboard (e.g. Alt+Tab). They are sent to the host. Esc cancels.")
-                .font(.caption2).foregroundStyle(.secondary)
+            ScrollView(.horizontal, showsIndicators: false) {
+                HostKeyboardView(selected: Set(pending?.keys ?? []), onTap: toggleKey)
+            }
         }
     }
 
@@ -454,18 +454,23 @@ struct ControllerMapperView: View {
         if pending!.gamepad.contains(b) { pending!.gamepad.remove(b) } else { pending!.gamepad.insert(b) }
     }
 
+    private func toggleKey(_ token: String) {
+        guard pending != nil else { return }
+        if let i = pending!.keys.firstIndex(of: token) { pending!.keys.remove(at: i) }
+        else { pending!.keys.append(token) }
+    }
+
     private func savePending() {
         guard let p = pending else { return }
         let target: BindingTarget = p.kind == .gamepad
             ? .gamepad(GamepadButton.allCases.filter { p.gamepad.contains($0) })   // stable order
-            : .keyboard(p.keys)
+            : .keyboard(KeyToken.ordered(p.keys))                                  // modifiers first
         bindings.append(ControllerBinding(sources: p.sources, target: target))
         ControllerBindingStore.save(bindings)
         cancelPending()
     }
 
     private func cancelPending() {
-        chord.stop()
         pending = nil
     }
 

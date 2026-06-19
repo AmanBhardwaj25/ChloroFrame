@@ -25,7 +25,7 @@ struct SettingsView: View {
     @State private var awdlReady = AWDLSuppressor.shared.isHelperInstalled
     @State private var awdlSetupError: String?
     @State private var showKeybinds = false
-    @State private var showController = false
+    @Environment(\.openWindow) private var openWindow
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -74,7 +74,7 @@ struct SettingsView: View {
                     Spacer()
                 }
                 HStack {
-                    Button("Controller…") { showController = true }
+                    Button("Controller…") { openWindow(id: "controller") }
                         .help("Detect connected controllers, see their inputs live, and set up remaps.")
                     Spacer()
                 }
@@ -85,7 +85,6 @@ struct SettingsView: View {
         .fixedSize(horizontal: false, vertical: true)
         .onAppear { awdlReady = AWDLSuppressor.shared.isHelperInstalled }
         .sheet(isPresented: $showKeybinds) { KeybindEditorView() }
-        .sheet(isPresented: $showController) { ControllerMapperView() }
     }
 
     // A grouped section that grows to fit its contents (no scroll view, so the window can be

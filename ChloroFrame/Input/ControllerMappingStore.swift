@@ -119,6 +119,19 @@ struct ControllerBindingStore {
 // win/shift, letters, f-keys) plus a few extras a controller chord commonly wants. Resolving a
 // token to a host virtual-key for the wire happens in the translator phase.
 enum KeyToken {
+    static let modifierOrder = ["ctrl", "alt", "shift", "win"]
+
+    /// Modifiers first (held first when sent), then the rest in their existing order.
+    static func ordered(_ tokens: [String]) -> [String] {
+        let mods = modifierOrder.filter { tokens.contains($0) }
+        let rest = tokens.filter { !modifierOrder.contains($0) }
+        return mods + rest
+    }
+
+    static func summary(_ tokens: [String]) -> String {
+        ordered(tokens).map(label).joined(separator: " + ")
+    }
+
     static func label(_ token: String) -> String {
         switch token.lowercased() {
         case "ctrl", "control":         return "Ctrl"
@@ -131,11 +144,48 @@ enum KeyToken {
         case "esc", "escape":           return "Esc"
         case "backspace":               return "Backspace"
         case "delete":                  return "Delete"
+        case "capslock":                return "Caps"
+        case "insert":                  return "Insert"
+        case "home":                    return "Home"
+        case "end":                     return "End"
+        case "pageup":                  return "PgUp"
+        case "pagedown":                return "PgDn"
         case "up":                      return "Up"
         case "down":                    return "Down"
         case "left":                    return "Left"
         case "right":                   return "Right"
         case "mute":                    return "Mute"
+        case "volumeup":                return "Vol+"
+        case "volumedown":              return "Vol-"
+        case "playpause":               return "Play/Pause"
+        case "stop":                    return "Stop"
+        case "prevtrack":               return "Prev"
+        case "nexttrack":               return "Next"
+        case "printscreen":             return "PrtScn"
+        case "scrolllock":              return "ScrLk"
+        case "pause":                   return "Pause"
+        case "apps":                    return "Menu"
+        case "numlock":                 return "NumLk"
+        case "numdivide":               return "Num /"
+        case "nummultiply":             return "Num *"
+        case "numsubtract":             return "Num -"
+        case "numadd":                  return "Num +"
+        case "numdecimal":              return "Num ."
+        case "numenter":                return "Num Enter"
+        case "num0", "num1", "num2", "num3", "num4",
+             "num5", "num6", "num7", "num8", "num9":
+                                        return "Num " + token.suffix(1)
+        case "grave":                   return "`"
+        case "minus":                   return "-"
+        case "equal":                   return "="
+        case "lbracket":                return "["
+        case "rbracket":                return "]"
+        case "backslash":               return "\\"
+        case "semicolon":               return ";"
+        case "quote":                   return "'"
+        case "comma":                   return ","
+        case "period":                  return "."
+        case "slash":                   return "/"
         default:                        return token.count <= 3 ? token.uppercased() : token.capitalized
         }
     }

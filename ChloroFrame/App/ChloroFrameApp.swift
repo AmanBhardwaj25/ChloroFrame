@@ -26,6 +26,13 @@ struct ChloroFrameApp: App {
         Settings {
             SettingsView()
         }
+
+        // Standalone, resizable window for the controller setup page (sheets can't be resized,
+        // maximized, or minimized). Opened from Settings via openWindow(id: "controller").
+        Window("Controller", id: "controller") {
+            ControllerMapperView()
+        }
+        .windowResizability(.contentMinSize)
     }
 }
 
