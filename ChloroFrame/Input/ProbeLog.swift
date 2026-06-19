@@ -10,6 +10,9 @@
 //  so it works in a distributed build, not just the developer checkout. One shared FileHandle and
 //  one shared formatter; no per-line fsync.
 //
+//  DEBUG-only: log() is a no-op in release builds, and the "Log to session.log" toggle that drives
+//  it is hidden in release. Release builds write no controller logs to file or console.
+//
 
 import Foundation
 
@@ -33,6 +36,7 @@ final class ProbeLog {
     var path: String { url.path }
 
     func log(_ line: String) {
+        #if DEBUG
         queue.async { [self] in
             let data = Data("[\(formatter.string(from: Date()))] \(line)\n".utf8)
             if handle == nil {
@@ -44,5 +48,6 @@ final class ProbeLog {
             }
             handle?.write(data)
         }
+        #endif
     }
 }

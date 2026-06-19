@@ -389,9 +389,11 @@ struct ControllerMapperView: View {
 
             HStack {
                 Button(hid.running ? "Stop" : "Start raw scan") { hid.running ? hid.stop() : hid.start() }
+                #if DEBUG
                 if hid.running {
                     Button(hid.logging ? "Stop logging" : "Log to session.log") { hid.setLogging(!hid.logging) }
                 }
+                #endif
                 if hid.running, !hid.deviceNames.isEmpty {
                     Text(hid.deviceNames.joined(separator: ", "))
                         .font(.caption2).foregroundStyle(.secondary).lineLimit(1)
