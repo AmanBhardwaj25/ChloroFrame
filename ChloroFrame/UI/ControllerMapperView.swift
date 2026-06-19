@@ -34,8 +34,12 @@ struct ControllerMapperView: View {
     // Derived from config.
     private var learned: [LearnedButton] { config?.learnedButtons ?? [] }
     private var bindings: [ControllerBinding] { config?.bindings ?? [] }
-    // Live macOS buttons, or the config's saved snapshot if GameController hasn't repopulated yet.
-    private var knownButtonNames: [String] { input.knownButtons.isEmpty ? (config?.macosButtons ?? []) : input.knownButtons }
+    // Live canonical controls on the selected pad, or the config's saved snapshot if GameController
+    // has not repopulated yet.
+    private var knownControls: [GamepadButton] {
+        input.knownControls.isEmpty ? (config?.macosButtons ?? []).compactMap(GamepadButton.init(rawValue:))
+                                    : input.knownControls
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -277,7 +281,7 @@ struct ControllerMapperView: View {
             } else {
                 HStack {
                     Button("Add binding") { pending = Pending() }
-                        .disabled(knownButtonNames.isEmpty && learned.isEmpty)
+                        .disabled(knownControls.isEmpty && learned.isEmpty)
                     if !bindings.isEmpty {
                         Button("Clear all") { config?.bindings = []; persist() }
                     }
@@ -296,8 +300,8 @@ struct ControllerMapperView: View {
                 Text("Source: tap one button, or several for a combo").font(.caption2).foregroundStyle(.secondary)
                 let columns = [GridItem(.adaptive(minimum: 92), spacing: 6)]
                 LazyVGrid(columns: columns, alignment: .leading, spacing: 6) {
-                    ForEach(knownButtonNames, id: \.self) { name in
-                        sourceChip(.gamepad(name: name), label: name, system: nil)
+                    ForEach(knownControls) { control in
+                        sourceChip(.gamepad(control: control), label: control.label, system: nil)
                     }
                     ForEach(learned) { lb in
                         sourceChip(.learned(deviceKey: config?.hardwareID ?? "", bitKey: lb.bitKey, label: lb.label),
@@ -445,7 +449,7 @@ struct ControllerMapperView: View {
             configURL = ControllerConfigStore.linkedURL(deviceKey: dev.id)
         } else if config?.hardwareID != dev.id {
             config = ControllerConfig.new(vendorID: dev.vendorID, productID: dev.productID,
-                                          name: dev.name, macosButtons: input.knownButtons)
+                                          name: dev.name, macosButtons: input.knownControls.map(\.rawValue))
             configURL = nil
         }
     }
@@ -454,13 +458,13 @@ struct ControllerMapperView: View {
     private func ensureConfig() {
         if config == nil, let dev = hid.devices.first {
             config = ControllerConfig.new(vendorID: dev.vendorID, productID: dev.productID,
-                                          name: dev.name, macosButtons: input.knownButtons)
+                                          name: dev.name, macosButtons: input.knownControls.map(\.rawValue))
         }
     }
 
     private func persist() {
         guard var c = config else { return }
-        if !input.knownButtons.isEmpty { c.macosButtons = input.knownButtons }
+        if !input.knownControls.isEmpty { c.macosButtons = input.knownControls.map(\.rawValue) }
         config = c
         configURL = ControllerConfigStore.save(c)
     }
@@ -480,7 +484,7 @@ struct ControllerMapperView: View {
         guard let dev = hid.devices.first else { return }
         ControllerConfigStore.removeConfig(deviceKey: dev.id)   // unlink; file stays on disk
         config = ControllerConfig.new(vendorID: dev.vendorID, productID: dev.productID,
-                                      name: dev.name, macosButtons: input.knownButtons)
+                                      name: dev.name, macosButtons: input.knownControls.map(\.rawValue))
         configURL = nil
     }
 
@@ -533,7 +537,7 @@ struct ControllerMapperView: View {
         // Reject collisions with other learned labels AND macOS-known button names, so a learned
         // source can never be confused with a real button at runtime.
         return learned.contains { $0.label.lowercased() == l }
-            || knownButtonNames.contains { $0.lowercased() == l }
+            || knownControls.contains { $0.label.lowercased() == l }
     }
     private var canSaveLearned: Bool {
         !pendingLabel.trimmingCharacters(in: .whitespaces).isEmpty && !isDuplicateLabel
@@ -547,6 +551,9 @@ struct ControllerMapperView: View {
     private func saveLearned() {
         guard canSaveLearned, let cand = hid.learnCandidate else { return }
         ensureConfig()
+        // The captured bit must belong to the controller whose config is shown; reject a candidate
+        // from a different device so its bit never lands in the wrong config.
+        guard config?.hardwareID == cand.deviceKey else { hid.clearCandidate(); pendingLabel = ""; return }
         config?.learnedButtons.append(LearnedButton(label: pendingLabel.trimmingCharacters(in: .whitespaces),
                                                     reportID: cand.reportID, byteIndex: cand.byteIndex, bitmask: cand.bitmask))
         persist()

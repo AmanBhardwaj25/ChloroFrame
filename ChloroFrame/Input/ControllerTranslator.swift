@@ -27,6 +27,7 @@ final class ControllerTranslator {
     private let controllerNumber = 0
     private var bindings: [ControllerBinding]
     private var learnedButtons: [LearnedButton] = []
+    private var deviceKey: String?           // hardware id of the controller whose config is loaded
     private let bitReader = RawHIDBitReader()
 
     private var timer: Timer?
@@ -44,15 +45,24 @@ final class ControllerTranslator {
     init(transport: StreamTransport) {
         self.transport = transport
         // Load the connected controller's config (bindings + learned/paddle buttons).
-        let (_, cfg) = ControllerConfigStore.loadForPrimaryController()
+        let (key, cfg) = ControllerConfigStore.loadForPrimaryController()
+        self.deviceKey = cfg?.hardwareID ?? key
         self.bindings = cfg?.bindings ?? []
         self.learnedButtons = cfg?.learnedButtons ?? []
+    }
+
+    /// Reload config for the currently-connected controller (after a hot-plug).
+    private func reloadConfig() {
+        let (key, cfg) = ControllerConfigStore.loadForPrimaryController()
+        deviceKey = cfg?.hardwareID ?? key
+        bindings = cfg?.bindings ?? []
+        learnedButtons = cfg?.learnedButtons ?? []
     }
 
     func start() {
         let nc = NotificationCenter.default
         observers.append(nc.addObserver(forName: .GCControllerDidConnect, object: nil, queue: .main) { [weak self] _ in
-            MainActor.assumeIsolated { self?.arrivalSent = false; self?.sendArrivalIfNeeded() }
+            MainActor.assumeIsolated { self?.reloadConfig(); self?.arrivalSent = false; self?.sendArrivalIfNeeded() }
         })
         observers.append(nc.addObserver(forName: .GCControllerDidDisconnect, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { self?.handleDisconnect() }
@@ -116,65 +126,36 @@ final class ControllerTranslator {
 
     // MARK: - Compute host state from GameController + bindings
 
-    private struct Contribution {
-        let name: String
-        let pressed: Bool
-        let apply: (inout HostGamepadState) -> Void
-    }
-
     private func compute(_ eg: GCExtendedGamepad) -> (HostGamepadState, [(UUID, [String])]) {
-        // Default contributions from the physical pad (digital buttons + analog triggers).
-        var items: [Contribution] = []
-        func add(_ b: GCControllerButtonInput?, _ apply: @escaping (inout HostGamepadState) -> Void) {
-            guard let b, let name = b.localizedName ?? b.unmappedLocalizedName else { return }
-            items.append(Contribution(name: name, pressed: b.isPressed, apply: apply))
+        // Pressed state of every canonical control present on the pad (shared accessor with setup).
+        var gcDown: [GamepadButton: Bool] = [:]
+        for c in GamepadButton.allCases {
+            if let b = c.element(in: eg) { gcDown[c] = b.isPressed }
         }
-        add(eg.buttonA) { $0.press(.a) }
-        add(eg.buttonB) { $0.press(.b) }
-        add(eg.buttonX) { $0.press(.x) }
-        add(eg.buttonY) { $0.press(.y) }
-        add(eg.leftShoulder) { $0.press(.leftBumper) }
-        add(eg.rightShoulder) { $0.press(.rightBumper) }
-        add(eg.dpad.up) { $0.press(.dpadUp) }
-        add(eg.dpad.down) { $0.press(.dpadDown) }
-        add(eg.dpad.left) { $0.press(.dpadLeft) }
-        add(eg.dpad.right) { $0.press(.dpadRight) }
-        add(eg.buttonMenu) { $0.press(.start) }
-        add(eg.buttonOptions) { $0.press(.back) }
-        add(eg.buttonHome) { $0.press(.guide) }
-        add(eg.leftThumbstickButton) { $0.press(.leftStickButton) }
-        add(eg.rightThumbstickButton) { $0.press(.rightStickButton) }
-        let lt = eg.leftTrigger, rt = eg.rightTrigger
-        items.append(Contribution(name: lt.localizedName ?? "Left Trigger", pressed: lt.isPressed) {
-            $0.leftTrigger = UInt8(clamping: Int(lt.value * 255)) })
-        items.append(Contribution(name: rt.localizedName ?? "Right Trigger", pressed: rt.isPressed) {
-            $0.rightTrigger = UInt8(clamping: Int(rt.value * 255)) })
-
-        let gcDown = Dictionary(items.map { ($0.name, $0.pressed) }, uniquingKeysWith: { $0 || $1 })
         let learnedByBitKey = Dictionary(learnedButtons.map { ($0.bitKey, $0) }, uniquingKeysWith: { a, _ in a })
 
-        // Resolve a binding source by identity, not display label: GC buttons by name, learned
-        // buttons by their (reportID, byte, bitmask) read live. Avoids label collisions.
+        // Resolve a binding source by identity, never by display label: GC controls by canonical
+        // id, learned buttons by their (reportID, byte, bitmask) read live from THIS device.
         func held(_ s: BindingSource) -> Bool {
             switch s {
-            case .gamepad(let name):
-                return gcDown[name] == true
+            case .gamepad(let control):
+                return gcDown[control] == true
             case .learned(_, let bitKey, _):
                 guard let lb = learnedByBitKey[bitKey] else { return false }
-                return bitReader.isSet(reportID: lb.reportID, byteIndex: lb.byteIndex, bitmask: lb.bitmask)
+                return bitReader.isSet(deviceKey: deviceKey, reportID: lb.reportID, byteIndex: lb.byteIndex, bitmask: lb.bitmask)
             }
         }
         func srcKey(_ s: BindingSource) -> String {
             switch s {
-            case .gamepad(let name):       return "gc:\(name)"
+            case .gamepad(let control):      return "gc:\(control.rawValue)"
             case .learned(_, let bitKey, _): return "ln:\(bitKey)"
             }
         }
 
         // Active bindings: largest source combo first; an active binding consumes its sources so a
-        // combo beats a standalone and consumed GC sources skip their default contribution.
+        // combo beats a standalone and consumed controls skip their default passthrough.
         var consumedKeys = Set<String>()
-        var consumedGCNames = Set<String>()
+        var consumedControls = Set<GamepadButton>()
         var gamepadPresses: [GamepadButton] = []
         var kbActive: [(UUID, [String])] = []
         for b in bindings.sorted(by: { $0.sources.count > $1.sources.count }) {
@@ -182,7 +163,7 @@ final class ControllerTranslator {
             guard b.sources.allSatisfy({ !consumedKeys.contains(srcKey($0)) }) else { continue }
             for s in b.sources {
                 consumedKeys.insert(srcKey(s))
-                if case .gamepad(let name) = s { consumedGCNames.insert(name) }
+                if case .gamepad(let control) = s { consumedControls.insert(control) }
             }
             switch b.target {
             case .gamepad(let btns): gamepadPresses.append(contentsOf: btns)
@@ -190,9 +171,14 @@ final class ControllerTranslator {
             }
         }
 
-        // Build the state: default passthrough for non-consumed inputs, then binding targets.
+        // Build the state: default passthrough for non-consumed controls, then binding targets.
         var state = HostGamepadState()
-        for item in items where item.pressed && !consumedGCNames.contains(item.name) { item.apply(&state) }
+        for (control, pressed) in gcDown where pressed && !control.isAnalogTrigger && !consumedControls.contains(control) {
+            state.press(control)
+        }
+        // Triggers pass through their analog value (unless consumed by a binding).
+        if !consumedControls.contains(.leftTrigger)  { state.leftTrigger  = UInt8(clamping: Int(eg.leftTrigger.value  * 255)) }
+        if !consumedControls.contains(.rightTrigger) { state.rightTrigger = UInt8(clamping: Int(eg.rightTrigger.value * 255)) }
         for btn in gamepadPresses { state.press(btn) }
 
         // Sticks always pass through (not combo sources). GameController Y is +1 up, matching the

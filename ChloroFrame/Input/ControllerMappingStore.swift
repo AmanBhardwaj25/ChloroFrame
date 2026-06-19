@@ -70,15 +70,16 @@ enum BindingTarget: Codable, Equatable {
     }
 }
 
-// One element of a source chord: either a macOS-known GameController button (by localizedName)
-// or a user-labeled learned button (resolved via LearnedButtonStore by device + bit).
+// One element of a source chord: either a macOS-known control (a canonical GamepadButton, stable
+// across OS localization / firmware / machines) or a user-labeled learned button (resolved by
+// device + bit). Sources are resolved by identity, never by display label.
 enum BindingSource: Codable, Equatable, Hashable {
-    case gamepad(name: String)
+    case gamepad(control: GamepadButton)
     case learned(deviceKey: String, bitKey: String, label: String)
 
     var displayName: String {
         switch self {
-        case .gamepad(let name):           return name
+        case .gamepad(let control):        return control.label
         case .learned(_, _, let label):    return label
         }
     }

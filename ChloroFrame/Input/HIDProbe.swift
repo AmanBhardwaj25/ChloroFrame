@@ -88,7 +88,7 @@ final class HIDProbe: ObservableObject {
     private var manager: IOHIDManager?
     private var seen: [String: Usage] = [:]
     private var reportState: [String: ReportSnapshot] = [:]
-    private var reportBuffers: [UnsafeMutablePointer<UInt8>] = []
+    private var reportBuffers: [ObjectIdentifier: UnsafeMutablePointer<UInt8>] = [:]
     private var reportUpdates: [String: Int] = [:]          // total reports seen per key
     private var reportChangeCounts: [String: [Int]] = [:]   // per-byte change tally, to spot noise
     private var reportLit: [String: [Int: Date]] = [:]      // per-byte last "real button" change time
@@ -114,7 +114,9 @@ final class HIDProbe: ObservableObject {
         ]
         IOHIDManagerSetDeviceMatchingMultiple(mgr, matches as CFArray)
 
+        manager = mgr   // set before open so device-matching callbacks during open can use it
         let context = Unmanaged.passUnretained(self).toOpaque()
+        // Manager-level value callback already covers hot-plugged devices.
         IOHIDManagerRegisterInputValueCallback(mgr, { ctx, _, _, value in
             guard let ctx else { return }
             let me = Unmanaged<HIDProbe>.fromOpaque(ctx).takeUnretainedValue()
@@ -124,46 +126,63 @@ final class HIDProbe: ObservableObject {
             let v = IOHIDValueGetIntegerValue(value)
             DispatchQueue.main.async { me.record(page: page, usage: usage, value: v) }
         }, context)
+        // Device matching/removal: register report callbacks per device and keep the list current,
+        // including devices plugged in after the window opens.
+        IOHIDManagerRegisterDeviceMatchingCallback(mgr, { ctx, _, _, device in
+            guard let ctx else { return }
+            let me = Unmanaged<HIDProbe>.fromOpaque(ctx).takeUnretainedValue()
+            MainActor.assumeIsolated { me.registerReports(for: device); me.refreshDevicesList() }
+        }, context)
+        IOHIDManagerRegisterDeviceRemovalCallback(mgr, { ctx, _, _, device in
+            guard let ctx else { return }
+            let me = Unmanaged<HIDProbe>.fromOpaque(ctx).takeUnretainedValue()
+            MainActor.assumeIsolated { me.dropDevice(device); me.refreshDevicesList() }
+        }, context)
 
         IOHIDManagerScheduleWithRunLoop(mgr, CFRunLoopGetMain(), CFRunLoopMode.defaultMode.rawValue)
         let result = IOHIDManagerOpen(mgr, IOOptionBits(kIOHIDOptionsTypeNone))
-        manager = mgr
 
         if result == kIOReturnSuccess {
             running = true
-            refreshDeviceNames(mgr)
-            registerReportCallbacks(mgr, context: context)
+            refreshDevicesList()
         } else {
             running = false
             openError = String(format: "IOHIDManagerOpen failed (0x%08X). Input Monitoring may be required.", result)
         }
     }
 
-    // Register a raw input-report callback per matched device. Each needs its own pre-allocated
-    // buffer that the system fills; we keep the buffers alive until stop().
-    private func registerReportCallbacks(_ mgr: IOHIDManager, context: UnsafeMutableRawPointer) {
-        guard let devices = IOHIDManagerCopyDevices(mgr) as? Set<IOHIDDevice> else { return }
-        for device in devices {
-            let buf = UnsafeMutablePointer<UInt8>.allocate(capacity: kReportBufferCapacity)
-            buf.initialize(repeating: 0, count: kReportBufferCapacity)
-            reportBuffers.append(buf)
-            IOHIDDeviceRegisterInputReportCallback(device, buf, kReportBufferCapacity, { ctx, _, sender, _, reportID, report, length in
-                guard let ctx else { return }
-                let me = Unmanaged<HIDProbe>.fromOpaque(ctx).takeUnretainedValue()
-                var name = "Controller"
-                var vid = 0, pid = 0
-                if let sender {
-                    let dev = Unmanaged<IOHIDDevice>.fromOpaque(sender).takeUnretainedValue()
-                    if let n = IOHIDDeviceGetProperty(dev, kIOHIDProductKey as CFString) as? String { name = n }
-                    vid = (IOHIDDeviceGetProperty(dev, kIOHIDVendorIDKey as CFString) as? Int) ?? 0
-                    pid = (IOHIDDeviceGetProperty(dev, kIOHIDProductIDKey as CFString) as? Int) ?? 0
-                }
-                let count = max(0, min(Int(length), kReportBufferCapacity))
-                let bytes = Array(UnsafeBufferPointer(start: report, count: count))
-                DispatchQueue.main.async {
-                    me.recordReport(device: name, vendorID: vid, productID: pid, reportID: Int(reportID), bytes: bytes)
-                }
-            }, context)
+    // Register a raw input-report callback for one device (deduped by identity), allocating its
+    // pre-allocated buffer. Buffers live until removal or stop().
+    private func registerReports(for device: IOHIDDevice) {
+        let oid = ObjectIdentifier(device)
+        guard reportBuffers[oid] == nil else { return }
+        let buf = UnsafeMutablePointer<UInt8>.allocate(capacity: kReportBufferCapacity)
+        buf.initialize(repeating: 0, count: kReportBufferCapacity)
+        reportBuffers[oid] = buf
+        let context = Unmanaged.passUnretained(self).toOpaque()
+        IOHIDDeviceRegisterInputReportCallback(device, buf, kReportBufferCapacity, { ctx, _, sender, _, reportID, report, length in
+            guard let ctx else { return }
+            let me = Unmanaged<HIDProbe>.fromOpaque(ctx).takeUnretainedValue()
+            var name = "Controller"
+            var vid = 0, pid = 0
+            if let sender {
+                let dev = Unmanaged<IOHIDDevice>.fromOpaque(sender).takeUnretainedValue()
+                if let n = IOHIDDeviceGetProperty(dev, kIOHIDProductKey as CFString) as? String { name = n }
+                vid = (IOHIDDeviceGetProperty(dev, kIOHIDVendorIDKey as CFString) as? Int) ?? 0
+                pid = (IOHIDDeviceGetProperty(dev, kIOHIDProductIDKey as CFString) as? Int) ?? 0
+            }
+            let count = max(0, min(Int(length), kReportBufferCapacity))
+            let bytes = Array(UnsafeBufferPointer(start: report, count: count))
+            DispatchQueue.main.async {
+                me.recordReport(device: name, vendorID: vid, productID: pid, reportID: Int(reportID), bytes: bytes)
+            }
+        }, context)
+    }
+
+    private func dropDevice(_ device: IOHIDDevice) {
+        let oid = ObjectIdentifier(device)
+        if let buf = reportBuffers.removeValue(forKey: oid) {
+            buf.deinitialize(count: kReportBufferCapacity); buf.deallocate()
         }
     }
 
@@ -298,7 +317,7 @@ final class HIDProbe: ObservableObject {
         deviceNames = []; devices = []
         // Free the report buffers only after the manager is closed, so the system is no longer
         // writing into them.
-        for buf in reportBuffers { buf.deinitialize(count: kReportBufferCapacity); buf.deallocate() }
+        for (_, buf) in reportBuffers { buf.deinitialize(count: kReportBufferCapacity); buf.deallocate() }
         reportBuffers.removeAll()
         reportUpdates.removeAll(); reportChangeCounts.removeAll(); reportLit.removeAll(); reportValueSets.removeAll()
     }
@@ -321,15 +340,15 @@ final class HIDProbe: ObservableObject {
                                : "==== PROBE LOG STOP ====")
     }
 
-    private func refreshDeviceNames(_ mgr: IOHIDManager) {
-        guard let hidDevices = IOHIDManagerCopyDevices(mgr) as? Set<IOHIDDevice> else { return }
+    private func refreshDevicesList() {
+        guard let mgr = manager, let hidDevices = IOHIDManagerCopyDevices(mgr) as? Set<IOHIDDevice> else { return }
         devices = hidDevices.map { dev in
             let name = (IOHIDDeviceGetProperty(dev, kIOHIDProductKey as CFString) as? String) ?? "Controller"
             let vid = (IOHIDDeviceGetProperty(dev, kIOHIDVendorIDKey as CFString) as? Int) ?? 0
             let pid = (IOHIDDeviceGetProperty(dev, kIOHIDProductIDKey as CFString) as? Int) ?? 0
             return DeviceID(id: ControllerConfigStore.deviceKey(vendorID: vid, productID: pid),
                             name: name, vendorID: vid, productID: pid)
-        }.sorted { $0.name < $1.name }
+        }.sorted { ($0.vendorID, $0.productID, $0.name) < ($1.vendorID, $1.productID, $1.name) }
         deviceNames = devices.map(\.name)
     }
 

@@ -130,11 +130,15 @@ enum ControllerConfigStore {
         IOHIDManagerSetDeviceMatchingMultiple(mgr, matches as CFArray)
         IOHIDManagerOpen(mgr, IOOptionBits(kIOHIDOptionsTypeNone))   // best effort; CopyDevices is unreliable otherwise
         defer { IOHIDManagerClose(mgr, IOOptionBits(kIOHIDOptionsTypeNone)) }
-        guard let devices = IOHIDManagerCopyDevices(mgr) as? Set<IOHIDDevice>, let dev = devices.first else { return nil }
-        let vid = (IOHIDDeviceGetProperty(dev, kIOHIDVendorIDKey as CFString) as? Int) ?? 0
-        let pid = (IOHIDDeviceGetProperty(dev, kIOHIDProductIDKey as CFString) as? Int) ?? 0
-        guard vid != 0 || pid != 0 else { return nil }
-        return deviceKey(vendorID: vid, productID: pid)
+        guard let devices = IOHIDManagerCopyDevices(mgr) as? Set<IOHIDDevice> else { return nil }
+        // Deterministic pick (Set ordering is not stable): lowest vendor/product id.
+        let keyed = devices.compactMap { dev -> (Int, Int)? in
+            let vid = (IOHIDDeviceGetProperty(dev, kIOHIDVendorIDKey as CFString) as? Int) ?? 0
+            let pid = (IOHIDDeviceGetProperty(dev, kIOHIDProductIDKey as CFString) as? Int) ?? 0
+            return (vid != 0 || pid != 0) ? (vid, pid) : nil
+        }.sorted { ($0.0, $0.1) < ($1.0, $1.1) }
+        guard let first = keyed.first else { return nil }
+        return deviceKey(vendorID: first.0, productID: first.1)
     }
 
     /// Config for the connected controller at stream start: try the enumerated device key, then

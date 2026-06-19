@@ -24,6 +24,36 @@ import Foundation
 import GameController
 import Combine
 
+// Canonical control -> GameController element. The ONE place this mapping lives, shared by the
+// setup page (which controls are present) and the runtime translator (reading their state), so a
+// binding's source means the same physical control on both sides.
+extension GamepadButton {
+    func element(in eg: GCExtendedGamepad) -> GCControllerButtonInput? {
+        switch self {
+        case .a:                return eg.buttonA
+        case .b:                return eg.buttonB
+        case .x:                return eg.buttonX
+        case .y:                return eg.buttonY
+        case .leftBumper:       return eg.leftShoulder
+        case .rightBumper:      return eg.rightShoulder
+        case .leftTrigger:      return eg.leftTrigger
+        case .rightTrigger:     return eg.rightTrigger
+        case .dpadUp:           return eg.dpad.up
+        case .dpadDown:         return eg.dpad.down
+        case .dpadLeft:         return eg.dpad.left
+        case .dpadRight:        return eg.dpad.right
+        case .start:            return eg.buttonMenu
+        case .back:             return eg.buttonOptions
+        case .guide:            return eg.buttonHome
+        case .leftStickButton:  return eg.leftThumbstickButton
+        case .rightStickButton: return eg.rightThumbstickButton
+        }
+    }
+
+    /// Whether this control's host effect is an analog trigger (set the trigger byte) vs a flag.
+    var isAnalogTrigger: Bool { self == .leftTrigger || self == .rightTrigger }
+}
+
 @MainActor
 final class ControllerInput: ObservableObject {
 
@@ -59,7 +89,7 @@ final class ControllerInput: ObservableObject {
 
     @Published private(set) var controllers: [ControllerInfo] = []
     @Published private(set) var selectedID: ObjectIdentifier?       // controller the live view + listen target
-    @Published private(set) var knownButtons: [String] = []         // localizedNames of the selected pad's digital buttons
+    @Published private(set) var knownControls: [GamepadButton] = [] // canonical controls present on the selected pad
     @Published private(set) var liveValues: [String: Float] = [:]   // element label -> current value
     @Published private(set) var lastEvent: InputEvent?
     @Published private(set) var isListening = false
@@ -134,19 +164,16 @@ final class ControllerInput: ObservableObject {
         recomputeKnownButtons()
     }
 
-    // The selected controller's digital buttons (face buttons, shoulders, stick clicks, menu/
-    // options/home, analog triggers), by localizedName. These are the macOS-known sources a
-    // binding can use, alongside user-learned buttons.
+    // The canonical controls present on the selected pad. Uses the same GamepadButton -> element
+    // accessor the runtime translator uses, so setup and runtime never drift (a binding's source
+    // resolves to the same physical control on both sides).
     private func recomputeKnownButtons() {
         guard let id = selectedID,
-              let c = GCController.controllers().first(where: { ObjectIdentifier($0) == id }) else {
-            knownButtons = []; return
+              let c = GCController.controllers().first(where: { ObjectIdentifier($0) == id }),
+              let eg = c.extendedGamepad else {
+            knownControls = []; return
         }
-        let names = c.physicalInputProfile.allElements.compactMap { el -> String? in
-            guard el is GCControllerButtonInput else { return nil }
-            return el.localizedName ?? el.unmappedLocalizedName
-        }
-        knownButtons = Array(Set(names)).sorted()
+        knownControls = GamepadButton.allCases.filter { $0.element(in: eg) != nil }
     }
 
     // MARK: - Wiring
