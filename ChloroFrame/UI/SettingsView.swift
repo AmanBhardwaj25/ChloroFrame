@@ -25,6 +25,7 @@ struct SettingsView: View {
     @State private var awdlReady = AWDLSuppressor.shared.isHelperInstalled
     @State private var awdlSetupError: String?
     @State private var showKeybinds = false
+    @Environment(\.openWindow) private var openWindow
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -70,6 +71,11 @@ struct SettingsView: View {
                 HStack {
                     Button("Setup custom keybinds…") { showKeybinds = true }
                         .help("Remap the command, option, control, and fn keys for the host. Takes effect on the next connect.")
+                    Spacer()
+                }
+                HStack {
+                    Button("Controller…") { openWindow(id: "controller") }
+                        .help("Detect connected controllers, see their inputs live, and set up remaps.")
                     Spacer()
                 }
             }

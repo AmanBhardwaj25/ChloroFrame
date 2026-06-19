@@ -365,6 +365,7 @@ struct HostConnectionView: View {
 
             let t  = StreamTransport(descriptor: stream, config: config, rikey: result.rikey)
             let ih = InputHandler(transport: t)
+            let ct = ControllerTranslator(transport: t)
             r.stats = t.stats
             r.setStreamFps(config.fps)
             t.onVideoTexture = { pixelBuffer, pts in r.enqueueFrame(pixelBuffer, pts: pts) }
@@ -390,6 +391,7 @@ struct HostConnectionView: View {
                 transport:    t,
                 renderer:     r,
                 inputHandler: ih,
+                controller:   ct,
                 appName:      app.title,
                 codecInfo:    "\(codecName) · \(display.width)×\(display.height)@\(display.fps) · \(stream.serverHost)",
                 onCancel:     { await clientRef.cancelApp(id: appId) }

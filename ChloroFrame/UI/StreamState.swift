@@ -25,6 +25,7 @@ final class StreamState {
     var transport:     StreamTransport?
     var renderer:      MetalVideoRenderer?
     var inputHandler:  InputHandler?
+    var controller:    ControllerTranslator?
     var stats:         StreamStatsCollector?
     var appName:       String = ""
     var codecInfo:     String = ""
@@ -38,6 +39,7 @@ final class StreamState {
         transport:    StreamTransport,
         renderer:     MetalVideoRenderer,
         inputHandler: InputHandler,
+        controller:   ControllerTranslator,
         appName:      String,
         codecInfo:    String,
         onCancel:     @escaping () async -> Void
@@ -45,11 +47,13 @@ final class StreamState {
         self.transport     = transport
         self.renderer      = renderer
         self.inputHandler  = inputHandler
+        self.controller    = controller
         self.stats         = transport.stats
         self.appName       = appName
         self.codecInfo     = codecInfo
         self.cancelClosure = onCancel
         self.disconnectError = nil
+        controller.start()
     }
 
     func stop() {
@@ -64,13 +68,17 @@ final class StreamState {
     }
 
     private func deactivate(reason: String) {
-        guard transport != nil || renderer != nil || inputHandler != nil || stats != nil else { return }
+        guard transport != nil || renderer != nil || inputHandler != nil || controller != nil || stats != nil else { return }
         print("[ChloroFrame][stream] deactivate reason=\(reason)")
-        inputHandler?.releaseAll()  // must be before transport.stop() so release packets can be sent
+        // Release inputs before transport.stop() so the release packets can still be sent.
+        inputHandler?.releaseAll()
+        controller?.releaseAll()
+        controller?.stop()
         transport?.stop(reason: reason)
         transport     = nil
         renderer      = nil
         inputHandler  = nil
+        controller    = nil
         stats         = nil
         cancelClosure = nil
         appName       = ""

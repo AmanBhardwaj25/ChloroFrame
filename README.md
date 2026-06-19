@@ -110,8 +110,58 @@ Known gaps:
 - Audio output-device and config-change handling (AVAudioEngine reconfiguration)
   and LAN audio encryption are not implemented. Some delivery jitter remains on noisy
   Wi-Fi; it is now concealed click-free rather than eliminated.
-- Gamepad, touch, and pen input are not implemented yet.
+- Controller/gamepad input works (GameController.framework), including remapping buttons and
+  back paddles to gamepad combos or host keyboard chords; see controller-mapping.md. Current
+  controller limitations:
+  - Only a single controller is fully supported. Multiple controllers at once, and telling
+    apart two of the same model, are not handled.
+  - The setup window's controller selection is not linked to a specific HID device
+    (GameController exposes no USB vendor/product id), so per-controller config is keyed to the
+    first connected HID controller.
+  - Extra (paddle) buttons are recoverable only when the controller actually emits a distinct
+    HID bit. Pads that fold them into a standard input in firmware (or emit nothing) expose
+    nothing to bind. Learned buttons are scoped by vendor/product id and do not transfer to a
+    different controller model.
+  - Source combos fire only when all sources are held on the same poll tick; the chord-tap
+    delay (holding back a standalone press that might become a combo) is not implemented, so a
+    fast standalone press can leak before its combo completes.
+  - Controller motion, touchpad surface, rumble/haptics, and battery are not wired up. Touch
+    and pen input are not implemented.
+  - Config files are JSON in ~/Library/Application Support/ChloroFrame/Controllers; the schema
+    is still changing during alpha, so configs may need to be recreated after updates.
 - Bonjour/mDNS host discovery is still a placeholder.
+
+## Controller Support
+
+ChloroFrame has native controller support built on Apple's GameController.framework, set up from
+an opt-in window (Settings, Input, Controller). A standard controller passes through to the host
+as-is. On top of that you can:
+
+- Identify "extra" buttons macOS does not expose (back paddles and similar), and give them labels.
+- Rebind any known or labeled button, alone or as a combo, to a host gamepad combo or a host
+  keyboard chord. Keyboard targets are picked on an on-screen Windows keyboard, so the keys go
+  straight to the host and are never intercepted by macOS (Win, F-keys, and media keys included).
+- Save it all per controller as a JSON config you can import or remove.
+
+See controller-mapping.md for the design, and the controller limitations under Known gaps above.
+
+### Planned
+
+The goal is to make controlling a host with a controller efficient and painless, and to make back
+buttons genuinely useful. Planned work, roughly in order of intent (not commitments or timelines):
+
+- **Combo timing.** A configurable millisecond gap between the keys in a chord. Example: a back
+  button bound to Alt+Tab with a 50 ms delay between the Alt press and the Tab press on the host,
+  for hosts or apps that need the keys staggered rather than sent together.
+- **Trigger modes / layers.** A binding should fire on more than just "all sources held". Modes:
+  - Press (today): fires as soon as the combo is held, releases on let-go.
+  - Release: fires only when the combo is released (back button + A on release does Alt+Tab).
+  - Hold: fires only after the combo is held for a configurable time (back button + A held for,
+    say, 2 seconds does Alt+Tab).
+- **Stick as mouse.** An optional layer where the left and/or right stick drives the host mouse,
+  so a user can navigate their host desktop with the controller.
+- **Apollo client-side scripts.** Apollo can trigger scripts from the client side; expose an easy
+  way to configure those and fire them from a controller binding.
 
 ## How To Use
 
