@@ -111,8 +111,24 @@ Known gaps:
   and LAN audio encryption are not implemented. Some delivery jitter remains on noisy
   Wi-Fi; it is now concealed click-free rather than eliminated.
 - Controller/gamepad input works (GameController.framework), including remapping buttons and
-  back paddles to gamepad combos or host keyboard chords; see controller-mapping.md. Touch and
-  pen input are not implemented yet, and controller motion/touchpad/rumble are not wired up.
+  back paddles to gamepad combos or host keyboard chords; see controller-mapping.md. Current
+  controller limitations:
+  - Only a single controller is fully supported. Multiple controllers at once, and telling
+    apart two of the same model, are not handled.
+  - The setup window's controller selection is not linked to a specific HID device
+    (GameController exposes no USB vendor/product id), so per-controller config is keyed to the
+    first connected HID controller.
+  - Extra (paddle) buttons are recoverable only when the controller actually emits a distinct
+    HID bit. Pads that fold them into a standard input in firmware (or emit nothing) expose
+    nothing to bind. Learned buttons are scoped by vendor/product id and do not transfer to a
+    different controller model.
+  - Source combos fire only when all sources are held on the same poll tick; the chord-tap
+    delay (holding back a standalone press that might become a combo) is not implemented, so a
+    fast standalone press can leak before its combo completes.
+  - Controller motion, touchpad surface, rumble/haptics, and battery are not wired up. Touch
+    and pen input are not implemented.
+  - Config files are JSON in ~/Library/Application Support/ChloroFrame/Controllers; the schema
+    is still changing during alpha, so configs may need to be recreated after updates.
 - Bonjour/mDNS host discovery is still a placeholder.
 
 ## How To Use
