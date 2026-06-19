@@ -110,7 +110,9 @@ Known gaps:
 - Audio output-device and config-change handling (AVAudioEngine reconfiguration)
   and LAN audio encryption are not implemented. Some delivery jitter remains on noisy
   Wi-Fi; it is now concealed click-free rather than eliminated.
-- Gamepad, touch, and pen input are not implemented yet.
+- Controller/gamepad input works (GameController.framework), including remapping buttons and
+  back paddles to gamepad combos or host keyboard chords; see controller-mapping.md. Touch and
+  pen input are not implemented yet, and controller motion/touchpad/rumble are not wired up.
 - Bonjour/mDNS host discovery is still a placeholder.
 
 ## How To Use

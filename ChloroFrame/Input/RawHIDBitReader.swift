@@ -11,7 +11,9 @@
 import Foundation
 import IOKit.hid
 
-private let kBitReaderBufCapacity = 64
+// Generous fixed buffer: covers controllers whose input reports exceed the common 64 bytes
+// (some pack extra buttons past byte 64). The system fills up to this; we read the actual length.
+private let kBitReaderBufCapacity = 256
 
 @MainActor
 final class RawHIDBitReader {

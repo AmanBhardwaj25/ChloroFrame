@@ -7,10 +7,8 @@
 //  chord). Brand-agnostic: sources are GameController localizedNames, targets are standard host
 //  inputs the host already understands. See controller-mapping.md.
 //
-//  IMPORTANT: this store is not yet consumed by the stream. It exists so the remapper page is
-//  real and testable; applying these bindings to outgoing input is a later step.
-//
-//  Storage: UserDefaults, a JSON-encoded array under one key.
+//  These models are persisted inside ControllerConfig (per-controller JSON, see
+//  ControllerConfigStore) and consumed at runtime by ControllerTranslator to drive the host.
 //
 
 import Foundation

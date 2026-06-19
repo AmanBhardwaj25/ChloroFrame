@@ -2,11 +2,10 @@
 //  ControllerInput.swift
 //  ChloroFrame
 //
-//  Brand-agnostic game controller layer built on Apple's GameController.framework. This is a
-//  pure read/observe layer: it does NOT touch the stream or build any wire packets yet. Its job
-//  for now is discovery and diagnostics so we can see what a given controller actually exposes
-//  to macOS (DualShock 4, an Xbox-emulating third-party pad, etc.) before wiring anything into
-//  the input stream.
+//  Brand-agnostic game controller layer built on Apple's GameController.framework. This is the
+//  read/observe layer for the controller SETUP page: discovery, live readout, listen/learn
+//  capture, and the selected pad's known buttons. It does not send to the host; the runtime
+//  bridge that drives the stream is ControllerTranslator (which reads GameController directly).
 //
 //  Everything goes through GCPhysicalInputProfile, which is the most complete element view of a
 //  controller: every button, axis, dpad, trigger that macOS recognises shows up here, each with
@@ -91,6 +90,7 @@ final class ControllerInput: ObservableObject {
     deinit {
         let nc = NotificationCenter.default
         for o in observers { nc.removeObserver(o) }
+        GCController.stopWirelessControllerDiscovery()
     }
 
     // MARK: - Listen mode

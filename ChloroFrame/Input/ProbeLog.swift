@@ -6,9 +6,9 @@
 //  no-op'd to avoid streaming stutter (see Logging.swift), but the controller test page runs in
 //  Settings, off the stream hot path, so writing a few lines per button press is harmless.
 //
-//  Writes to the repo's logs/session.log, resolved from this source file's location so it works
-//  without hardcoding a machine path. Diagnostic/temporary: remove once paddle detection is
-//  settled.
+//  Writes to a real user log location (~/Library/Application Support/ChloroFrame/Logs/session.log)
+//  so it works in a distributed build, not just the developer checkout. One shared FileHandle and
+//  one shared formatter; no per-line fsync.
 //
 
 import Foundation
@@ -19,20 +19,22 @@ final class ProbeLog {
     private let queue = DispatchQueue(label: "com.chloroframe.probelog")
     private let url: URL
     private var handle: FileHandle?
+    private let formatter: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter(); return f
+    }()
 
     private init() {
-        // .../ChloroFrame/Input/ProbeLog.swift -> up 3 to repo root -> logs/session.log
-        let root = URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent()   // Input
-            .deletingLastPathComponent()   // ChloroFrame
-            .deletingLastPathComponent()   // repo root
-        url = root.appendingPathComponent("logs/session.log")
+        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+            ?? URL(fileURLWithPath: NSTemporaryDirectory())
+        url = base.appendingPathComponent("ChloroFrame/Logs/session.log")
     }
+
+    /// Where logs are written, for surfacing in the UI.
+    var path: String { url.path }
 
     func log(_ line: String) {
         queue.async { [self] in
-            let stamp = ISO8601DateFormatter().string(from: Date())
-            let data = Data("[\(stamp)] \(line)\n".utf8)
+            let data = Data("[\(formatter.string(from: Date()))] \(line)\n".utf8)
             if handle == nil {
                 let fm = FileManager.default
                 try? fm.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
@@ -41,7 +43,6 @@ final class ProbeLog {
                 handle?.seekToEndOfFile()
             }
             handle?.write(data)
-            try? handle?.synchronize()
         }
     }
 }

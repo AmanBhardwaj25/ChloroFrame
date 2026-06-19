@@ -11,12 +11,14 @@
 //    - Keyboard (edge-based): when a keyboard-target binding becomes active/inactive, sends host
 //      key down/up events, ref-counted so combos that share a key never leave it stuck.
 //
-//  Phase A handles macOS-known (GameController) sources only. Learned/paddle sources (raw HID at
-//  runtime) are layered on in Phase B; bindings that reference a learned source are skipped here.
+//  Sources are resolved by identity: macOS-known buttons by GameController name, learned/paddle
+//  buttons by their (reportID, byte, bitmask) read live from RawHIDBitReader. Output is paused and
+//  released when the app loses focus, matching the keyboard/mouse safety behavior.
 //
 
 import Foundation
 import GameController
+import AppKit
 
 @MainActor
 final class ControllerTranslator {
@@ -32,6 +34,7 @@ final class ControllerTranslator {
 
     private var lastSentState: HostGamepadState?
     private var arrivalSent = false
+    private var paused = false   // app not active: stop driving the host and release held inputs
 
     // Keyboard edge tracking.
     private var activeKBBindings: Set<UUID> = []
@@ -53,6 +56,14 @@ final class ControllerTranslator {
         })
         observers.append(nc.addObserver(forName: .GCControllerDidDisconnect, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { self?.handleDisconnect() }
+        })
+        // Focus-loss safety: when the app deactivates, release everything and stop driving the
+        // host (GameController keeps delivering input even when unfocused, unlike NSEvents).
+        observers.append(nc.addObserver(forName: NSApplication.willResignActiveNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.paused = true; self?.releaseAll() }
+        })
+        observers.append(nc.addObserver(forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.paused = false }
         })
         bitReader.start()
         sendArrivalIfNeeded()
@@ -81,6 +92,7 @@ final class ControllerTranslator {
     // MARK: - Tick
 
     private func tick() {
+        guard !paused else { return }   // app inactive: released already, do not drive the host
         guard let gp = activeGamepad(), let eg = gp.extendedGamepad else {
             if lastSentState != nil { handleDisconnect() }
             return
@@ -138,23 +150,40 @@ final class ControllerTranslator {
         items.append(Contribution(name: rt.localizedName ?? "Right Trigger", pressed: rt.isPressed) {
             $0.rightTrigger = UInt8(clamping: Int(rt.value * 255)) })
 
-        var nameDown = Dictionary(items.map { ($0.name, $0.pressed) }, uniquingKeysWith: { $0 || $1 })
-        // Learned (paddle) buttons: read their raw-HID bit and key by label so a binding source
-        // .learned(...,label) matches via displayName.
-        for lb in learnedButtons {
-            nameDown[lb.label] = bitReader.isSet(reportID: lb.reportID, byteIndex: lb.byteIndex, bitmask: lb.bitmask)
+        let gcDown = Dictionary(items.map { ($0.name, $0.pressed) }, uniquingKeysWith: { $0 || $1 })
+        let learnedByBitKey = Dictionary(learnedButtons.map { ($0.bitKey, $0) }, uniquingKeysWith: { a, _ in a })
+
+        // Resolve a binding source by identity, not display label: GC buttons by name, learned
+        // buttons by their (reportID, byte, bitmask) read live. Avoids label collisions.
+        func held(_ s: BindingSource) -> Bool {
+            switch s {
+            case .gamepad(let name):
+                return gcDown[name] == true
+            case .learned(_, let bitKey, _):
+                guard let lb = learnedByBitKey[bitKey] else { return false }
+                return bitReader.isSet(reportID: lb.reportID, byteIndex: lb.byteIndex, bitmask: lb.bitmask)
+            }
+        }
+        func srcKey(_ s: BindingSource) -> String {
+            switch s {
+            case .gamepad(let name):       return "gc:\(name)"
+            case .learned(_, let bitKey, _): return "ln:\(bitKey)"
+            }
         }
 
         // Active bindings: largest source combo first; an active binding consumes its sources so a
-        // combo beats a standalone and consumed sources skip their default contribution.
-        var consumed = Set<String>()
+        // combo beats a standalone and consumed GC sources skip their default contribution.
+        var consumedKeys = Set<String>()
+        var consumedGCNames = Set<String>()
         var gamepadPresses: [GamepadButton] = []
         var kbActive: [(UUID, [String])] = []
         for b in bindings.sorted(by: { $0.sources.count > $1.sources.count }) {
-            let names = b.sources.map(\.displayName)
-            guard names.allSatisfy({ nameDown[$0] == true }) else { continue }
-            guard names.allSatisfy({ !consumed.contains($0) }) else { continue }
-            names.forEach { consumed.insert($0) }
+            guard b.sources.allSatisfy(held) else { continue }
+            guard b.sources.allSatisfy({ !consumedKeys.contains(srcKey($0)) }) else { continue }
+            for s in b.sources {
+                consumedKeys.insert(srcKey(s))
+                if case .gamepad(let name) = s { consumedGCNames.insert(name) }
+            }
             switch b.target {
             case .gamepad(let btns): gamepadPresses.append(contentsOf: btns)
             case .keyboard(let toks): kbActive.append((b.id, toks))
@@ -163,7 +192,7 @@ final class ControllerTranslator {
 
         // Build the state: default passthrough for non-consumed inputs, then binding targets.
         var state = HostGamepadState()
-        for item in items where item.pressed && !consumed.contains(item.name) { item.apply(&state) }
+        for item in items where item.pressed && !consumedGCNames.contains(item.name) { item.apply(&state) }
         for btn in gamepadPresses { state.press(btn) }
 
         // Sticks always pass through (not combo sources). GameController Y is +1 up, matching the

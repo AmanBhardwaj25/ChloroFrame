@@ -18,8 +18,9 @@ import IOKit.hid
 import Combine
 
 // Fixed scratch buffer the system fills with each input report. File-scope so the @convention(c)
-// report callback (which cannot capture context) can reference it.
-private let kReportBufferCapacity = 64
+// report callback (which cannot capture context) can reference it. Generous so reports larger
+// than the common 64 bytes (extra buttons past byte 64) are not truncated.
+private let kReportBufferCapacity = 256
 
 @MainActor
 final class HIDProbe: ObservableObject {

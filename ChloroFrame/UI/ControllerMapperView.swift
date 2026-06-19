@@ -530,7 +530,10 @@ struct ControllerMapperView: View {
 
     private var isDuplicateLabel: Bool {
         let l = pendingLabel.trimmingCharacters(in: .whitespaces).lowercased()
+        // Reject collisions with other learned labels AND macOS-known button names, so a learned
+        // source can never be confused with a real button at runtime.
         return learned.contains { $0.label.lowercased() == l }
+            || knownButtonNames.contains { $0.lowercased() == l }
     }
     private var canSaveLearned: Bool {
         !pendingLabel.trimmingCharacters(in: .whitespaces).isEmpty && !isDuplicateLabel
@@ -553,6 +556,10 @@ struct ControllerMapperView: View {
 
     private func deleteLearned(_ lb: LearnedButton) {
         config?.learnedButtons.removeAll { $0.id == lb.id }
+        // Cascade: drop any binding that referenced this learned bit, so no stale binding lingers.
+        config?.bindings.removeAll { b in
+            b.sources.contains { if case .learned(_, let bitKey, _) = $0 { return bitKey == lb.bitKey } else { return false } }
+        }
         persist()
     }
 
