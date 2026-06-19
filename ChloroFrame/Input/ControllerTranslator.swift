@@ -103,11 +103,11 @@ final class ControllerTranslator {
 
     private func tick() {
         guard !paused else { return }   // app inactive: released already, do not drive the host
-        guard let gp = activeGamepad(), let eg = gp.extendedGamepad else {
+        guard let gp = activeGamepad() else {
             if lastSentState != nil { handleDisconnect() }
             return
         }
-        let (state, kbActive) = compute(eg)
+        let (state, kbActive) = compute(gp)
         if state != lastSentState {
             sendGamepad(state, mask: 0x1)
             lastSentState = state
@@ -126,11 +126,19 @@ final class ControllerTranslator {
 
     // MARK: - Compute host state from GameController + bindings
 
-    private func compute(_ eg: GCExtendedGamepad) -> (HostGamepadState, [(UUID, [String])]) {
+    private func compute(_ gp: GCController) -> (HostGamepadState, [(UUID, [String])]) {
+        guard let eg = gp.extendedGamepad else { return (HostGamepadState(), []) }
+
         // Pressed state of every canonical control present on the pad (shared accessor with setup).
         var gcDown: [GamepadButton: Bool] = [:]
         for c in GamepadButton.allCases {
             if let b = c.element(in: eg) { gcDown[c] = b.isPressed }
+        }
+        var macosDown: [String: Bool] = [:]
+        for element in gp.physicalInputProfile.allElements {
+            guard let button = element as? GCControllerButtonInput,
+                  let name = ControllerInput.stableName(for: element) else { continue }
+            macosDown[name] = button.isPressed
         }
         let learnedByBitKey = Dictionary(learnedButtons.map { ($0.bitKey, $0) }, uniquingKeysWith: { a, _ in a })
 
@@ -140,6 +148,8 @@ final class ControllerTranslator {
             switch s {
             case .gamepad(let control):
                 return gcDown[control] == true
+            case .macos(let elementName, _, _):
+                return macosDown[elementName] == true
             case .learned(_, let bitKey, _):
                 guard let lb = learnedByBitKey[bitKey] else { return false }
                 return bitReader.isSet(deviceKey: deviceKey, reportID: lb.reportID, byteIndex: lb.byteIndex, bitmask: lb.bitmask)
@@ -148,6 +158,7 @@ final class ControllerTranslator {
         func srcKey(_ s: BindingSource) -> String {
             switch s {
             case .gamepad(let control):      return "gc:\(control.rawValue)"
+            case .macos(let name, _, _):     return "macos:\(name)"
             case .learned(_, let bitKey, _): return "ln:\(bitKey)"
             }
         }

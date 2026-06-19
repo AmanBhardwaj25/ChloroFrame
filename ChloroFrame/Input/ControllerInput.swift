@@ -87,12 +87,40 @@ final class ControllerInput: ObservableObject {
         let symbolName: String?
     }
 
+    struct KnownControl: Identifiable, Equatable {
+        enum Kind: Equatable {
+            case canonical(GamepadButton)
+            case macos(elementName: String)
+        }
+
+        let kind: Kind
+        let displayName: String
+        let symbolName: String?
+
+        var id: String {
+            switch kind {
+            case .canonical(let control): return "gc:\(control.rawValue)"
+            case .macos(let name): return "macos:\(name)"
+            }
+        }
+    }
+
     @Published private(set) var controllers: [ControllerInfo] = []
     @Published private(set) var selectedID: ObjectIdentifier?       // controller the live view + listen target
     @Published private(set) var knownControls: [GamepadButton] = [] // canonical controls present on the selected pad
+    @Published private(set) var knownSourceControls: [KnownControl] = []
     @Published private(set) var liveValues: [String: Float] = [:]   // element label -> current value
     @Published private(set) var lastEvent: InputEvent?
     @Published private(set) var isListening = false
+
+    var selectedDisplayStyle: ControllerDisplayStyle {
+        guard let c = selectedController() else { return .generic }
+        if c.physicalInputProfile is GCDualSenseGamepad || c.physicalInputProfile is GCDualShockGamepad {
+            return .playStation
+        }
+        if c.physicalInputProfile is GCXboxGamepad { return .xbox }
+        return ControllerDisplayStyle.inferred(from: c.productCategory)
+    }
 
     private var listenCompletion: ((CapturedInput) -> Void)?
     private var comboCompletion: (([CapturedInput]) -> Void)?
@@ -151,6 +179,16 @@ final class ControllerInput: ObservableObject {
         isListening = false
     }
 
+    func display(for control: GamepadButton) -> GamepadControlDisplay {
+        let base = control.display(style: selectedDisplayStyle)
+        guard let c = selectedController(),
+              let eg = c.extendedGamepad,
+              let symbol = control.element(in: eg)?.sfSymbolsName else {
+            return base
+        }
+        return GamepadControlDisplay(label: base.label, symbolName: symbol)
+    }
+
     // MARK: - Selection
 
     /// Choose which connected controller the live readout and listen mode follow. Switching
@@ -168,12 +206,56 @@ final class ControllerInput: ObservableObject {
     // accessor the runtime translator uses, so setup and runtime never drift (a binding's source
     // resolves to the same physical control on both sides).
     private func recomputeKnownButtons() {
-        guard let id = selectedID,
-              let c = GCController.controllers().first(where: { ObjectIdentifier($0) == id }),
+        guard let c = selectedController(),
               let eg = c.extendedGamepad else {
-            knownControls = []; return
+            knownControls = []
+            knownSourceControls = []
+            return
         }
         knownControls = GamepadButton.allCases.filter { $0.element(in: eg) != nil }
+        knownSourceControls = Self.sourceControls(for: c, knownControls: knownControls, style: selectedDisplayStyle)
+    }
+
+    private func selectedController() -> GCController? {
+        guard let id = selectedID else { return nil }
+        return GCController.controllers().first(where: { ObjectIdentifier($0) == id })
+    }
+
+    private static func sourceControls(for controller: GCController,
+                                       knownControls: [GamepadButton],
+                                       style: ControllerDisplayStyle) -> [KnownControl] {
+        var controls = knownControls.map { control in
+            let base = control.display(style: style)
+            let symbol = controller.extendedGamepad.flatMap { control.element(in: $0)?.sfSymbolsName }
+            return KnownControl(kind: .canonical(control),
+                                displayName: base.label,
+                                symbolName: symbol ?? base.symbolName)
+        }
+
+        let canonicalElementNames = Set(knownControls.compactMap { control -> String? in
+            guard let eg = controller.extendedGamepad,
+                  let element = control.element(in: eg) else { return nil }
+            return stableName(for: element)
+        })
+        var seenExtraNames = Set<String>()
+        let extraButtons = controller.physicalInputProfile.allElements
+            .compactMap { element -> KnownControl? in
+                guard element is GCControllerButtonInput,
+                      let name = stableName(for: element),
+                      !canonicalElementNames.contains(name),
+                      seenExtraNames.insert(name).inserted else { return nil }
+                return KnownControl(kind: .macos(elementName: name),
+                                    displayName: name,
+                                    symbolName: element.sfSymbolsName)
+            }
+            .sorted { $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending }
+
+        controls.append(contentsOf: extraButtons)
+        return controls
+    }
+
+    static func stableName(for element: GCControllerElement) -> String? {
+        element.localizedName ?? element.unmappedLocalizedName
     }
 
     // MARK: - Wiring

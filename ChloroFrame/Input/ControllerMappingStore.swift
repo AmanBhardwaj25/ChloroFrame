@@ -15,6 +15,30 @@ import Foundation
 
 // Standard host gamepad buttons (the host emulates an Xbox-style pad). No "default" case: a
 // target is always something concrete; "leave it alone" means simply not creating a binding.
+enum ControllerDisplayStyle: String, Codable, Equatable {
+    case xbox
+    case playStation
+    case generic
+
+    static func inferred(from text: String?) -> ControllerDisplayStyle {
+        let lower = (text ?? "").lowercased()
+        if lower.contains("dualshock")
+            || lower.contains("dualsense")
+            || lower.contains("playstation")
+            || lower.contains("sony")
+            || lower.contains("ds4") {
+            return .playStation
+        }
+        if lower.contains("xbox") { return .xbox }
+        return .generic
+    }
+}
+
+struct GamepadControlDisplay: Equatable {
+    let label: String
+    let symbolName: String?
+}
+
 enum GamepadButton: String, CaseIterable, Codable, Identifiable {
     case a, b, x, y
     case leftBumper, rightBumper
@@ -26,24 +50,45 @@ enum GamepadButton: String, CaseIterable, Codable, Identifiable {
     var id: String { rawValue }
 
     var label: String {
+        display(style: .xbox).label
+    }
+
+    func display(style: ControllerDisplayStyle) -> GamepadControlDisplay {
         switch self {
-        case .a:                return "A"
-        case .b:                return "B"
-        case .x:                return "X"
-        case .y:                return "Y"
-        case .leftBumper:       return "LB"
-        case .rightBumper:      return "RB"
-        case .leftTrigger:      return "LT"
-        case .rightTrigger:     return "RT"
-        case .dpadUp:           return "D-Up"
-        case .dpadDown:         return "D-Down"
-        case .dpadLeft:         return "D-Left"
-        case .dpadRight:        return "D-Right"
-        case .start:            return "Start"
-        case .back:             return "Back"
-        case .guide:            return "Guide"
-        case .leftStickButton:  return "L3"
-        case .rightStickButton: return "R3"
+        case .a:
+            return GamepadControlDisplay(label: style == .playStation ? "Cross" : "A", symbolName: nil)
+        case .b:
+            return GamepadControlDisplay(label: style == .playStation ? "Circle" : "B", symbolName: nil)
+        case .x:
+            return GamepadControlDisplay(label: style == .playStation ? "Square" : "X", symbolName: nil)
+        case .y:
+            return GamepadControlDisplay(label: style == .playStation ? "Triangle" : "Y", symbolName: nil)
+        case .leftBumper:
+            return GamepadControlDisplay(label: style == .playStation ? "L1" : "LB", symbolName: nil)
+        case .rightBumper:
+            return GamepadControlDisplay(label: style == .playStation ? "R1" : "RB", symbolName: nil)
+        case .leftTrigger:
+            return GamepadControlDisplay(label: style == .playStation ? "L2" : "LT", symbolName: nil)
+        case .rightTrigger:
+            return GamepadControlDisplay(label: style == .playStation ? "R2" : "RT", symbolName: nil)
+        case .dpadUp:
+            return GamepadControlDisplay(label: "D-Up", symbolName: nil)
+        case .dpadDown:
+            return GamepadControlDisplay(label: "D-Down", symbolName: nil)
+        case .dpadLeft:
+            return GamepadControlDisplay(label: "D-Left", symbolName: nil)
+        case .dpadRight:
+            return GamepadControlDisplay(label: "D-Right", symbolName: nil)
+        case .start:
+            return GamepadControlDisplay(label: style == .playStation ? "Options" : "Start", symbolName: nil)
+        case .back:
+            return GamepadControlDisplay(label: style == .playStation ? "Share" : "Back", symbolName: nil)
+        case .guide:
+            return GamepadControlDisplay(label: style == .playStation ? "PS" : "Guide", symbolName: nil)
+        case .leftStickButton:
+            return GamepadControlDisplay(label: "L3", symbolName: nil)
+        case .rightStickButton:
+            return GamepadControlDisplay(label: "R3", symbolName: nil)
         }
     }
 }
@@ -70,16 +115,18 @@ enum BindingTarget: Codable, Equatable {
     }
 }
 
-// One element of a source chord: either a macOS-known control (a canonical GamepadButton, stable
-// across OS localization / firmware / machines) or a user-labeled learned button (resolved by
-// device + bit). Sources are resolved by identity, never by display label.
+// One element of a source chord: either a canonical gamepad control, another macOS-known
+// GameController element, or a user-labeled learned button resolved by device + raw-HID bit.
+// Sources are resolved by identity, never by the display label shown in the UI.
 enum BindingSource: Codable, Equatable, Hashable {
     case gamepad(control: GamepadButton)
+    case macos(elementName: String, displayName: String, symbolName: String?)
     case learned(deviceKey: String, bitKey: String, label: String)
 
     var displayName: String {
         switch self {
         case .gamepad(let control):        return control.label
+        case .macos(_, let name, _):       return name
         case .learned(_, _, let label):    return label
         }
     }

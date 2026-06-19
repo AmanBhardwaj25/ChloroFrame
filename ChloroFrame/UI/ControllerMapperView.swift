@@ -40,6 +40,19 @@ struct ControllerMapperView: View {
         input.knownControls.isEmpty ? (config?.macosButtons ?? []).compactMap(GamepadButton.init(rawValue:))
                                     : input.knownControls
     }
+    private var knownSourceControls: [ControllerInput.KnownControl] {
+        if !input.knownSourceControls.isEmpty { return input.knownSourceControls }
+        return knownControls.map { control in
+            let display = control.display(style: displayStyle)
+            return ControllerInput.KnownControl(kind: .canonical(control),
+                                                displayName: display.label,
+                                                symbolName: display.symbolName)
+        }
+    }
+    private var displayStyle: ControllerDisplayStyle {
+        let liveStyle = input.selectedDisplayStyle
+        return liveStyle == .generic ? ControllerDisplayStyle.inferred(from: config?.controllerName) : liveStyle
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -265,9 +278,9 @@ struct ControllerMapperView: View {
             } else {
                 ForEach(bindings) { b in
                     HStack(spacing: 6) {
-                        Text(b.sourceSummary).font(.callout).fontWeight(.medium)
+                        Text(sourceSummary(b.sources)).font(.callout).fontWeight(.medium)
                         Image(systemName: "arrow.right").foregroundStyle(.secondary).font(.caption)
-                        Text(b.target.summary).font(.callout)
+                        Text(targetSummary(b.target)).font(.callout)
                             .foregroundStyle(Color(red: 0.70, green: 0.52, blue: 0.0))
                         Spacer()
                         Button(role: .destructive) { deleteBinding(b) } label: { Image(systemName: "trash") }
@@ -281,7 +294,7 @@ struct ControllerMapperView: View {
             } else {
                 HStack {
                     Button("Add binding") { pending = Pending() }
-                        .disabled(knownControls.isEmpty && learned.isEmpty)
+                        .disabled(knownSourceControls.isEmpty && learned.isEmpty)
                     if !bindings.isEmpty {
                         Button("Clear all") { config?.bindings = []; persist() }
                     }
@@ -300,16 +313,17 @@ struct ControllerMapperView: View {
                 Text("Source: tap one button, or several for a combo").font(.caption2).foregroundStyle(.secondary)
                 let columns = [GridItem(.adaptive(minimum: 92), spacing: 6)]
                 LazyVGrid(columns: columns, alignment: .leading, spacing: 6) {
-                    ForEach(knownControls) { control in
-                        sourceChip(.gamepad(control: control), label: control.label, system: nil)
+                    ForEach(knownSourceControls) { control in
+                        sourceChip(source(for: control), label: control.displayName,
+                                   symbolName: control.symbolName, system: nil)
                     }
                     ForEach(learned) { lb in
                         sourceChip(.learned(deviceKey: config?.hardwareID ?? "", bitKey: lb.bitKey, label: lb.label),
-                                   label: lb.label, system: "button.programmable")
+                                   label: lb.label, symbolName: nil, system: "button.programmable")
                     }
                 }
                 if !p.sources.isEmpty {
-                    Text("Trigger: " + p.sources.map(\.displayName).joined(separator: " + "))
+                    Text("Trigger: " + sourceSummary(p.sources))
                         .font(.caption).foregroundStyle(Color(red: 0.70, green: 0.52, blue: 0.0))
                 }
 
@@ -333,10 +347,14 @@ struct ControllerMapperView: View {
         }
     }
 
-    private func sourceChip(_ source: BindingSource, label: String, system: String?) -> some View {
+    private func sourceChip(_ source: BindingSource, label: String, symbolName: String?, system: String?) -> some View {
         let on = pending?.sources.contains(source) ?? false
         return HStack(spacing: 3) {
-            if let system { Image(systemName: system).font(.caption2) }
+            if let symbolName {
+                Image(systemName: symbolName).font(.caption2)
+            } else if let system {
+                Image(systemName: system).font(.caption2)
+            }
             Text(label).font(.caption2).lineLimit(1)
         }
         .frame(maxWidth: .infinity).padding(.vertical, 4)
@@ -351,8 +369,12 @@ struct ControllerMapperView: View {
         return LazyVGrid(columns: columns, alignment: .leading, spacing: 6) {
             ForEach(GamepadButton.allCases) { btn in
                 let on = pending?.gamepad.contains(btn) ?? false
-                Text(btn.label)
-                    .font(.caption2).frame(maxWidth: .infinity).padding(.vertical, 4)
+                let display = controlDisplay(btn)
+                HStack(spacing: 3) {
+                    if let symbolName = display.symbolName { Image(systemName: symbolName).font(.caption2) }
+                    Text(display.label).font(.caption2).lineLimit(1)
+                }
+                    .frame(maxWidth: .infinity).padding(.vertical, 4)
                     .background(RoundedRectangle(cornerRadius: 5)
                         .fill(on ? Color.accentColor.opacity(0.4) : Color.gray.opacity(0.15)))
                     .contentShape(Rectangle())
@@ -539,7 +561,7 @@ struct ControllerMapperView: View {
         // Reject collisions with other learned labels AND macOS-known button names, so a learned
         // source can never be confused with a real button at runtime.
         return learned.contains { $0.label.lowercased() == l }
-            || knownControls.contains { $0.label.lowercased() == l }
+            || knownSourceControls.contains { $0.displayName.lowercased() == l }
     }
     private var canSaveLearned: Bool {
         !pendingLabel.trimmingCharacters(in: .whitespaces).isEmpty && !isDuplicateLabel
@@ -570,6 +592,43 @@ struct ControllerMapperView: View {
             b.sources.contains { if case .learned(_, let bitKey, _) = $0 { return bitKey == lb.bitKey } else { return false } }
         }
         persist()
+    }
+
+    private func controlDisplay(_ control: GamepadButton) -> GamepadControlDisplay {
+        let live = input.display(for: control)
+        if input.selectedDisplayStyle != .generic || live.symbolName != nil { return live }
+        return control.display(style: displayStyle)
+    }
+
+    private func source(for control: ControllerInput.KnownControl) -> BindingSource {
+        switch control.kind {
+        case .canonical(let button):
+            return .gamepad(control: button)
+        case .macos(let elementName):
+            return .macos(elementName: elementName,
+                          displayName: control.displayName,
+                          symbolName: control.symbolName)
+        }
+    }
+
+    private func sourceSummary(_ sources: [BindingSource]) -> String {
+        sources.map { source in
+            switch source {
+            case .gamepad(let control): return controlDisplay(control).label
+            case .macos(_, let name, _): return name
+            case .learned(_, _, let label): return label
+            }
+        }
+        .joined(separator: " + ")
+    }
+
+    private func targetSummary(_ target: BindingTarget) -> String {
+        switch target {
+        case .gamepad(let buttons):
+            return buttons.map { controlDisplay($0).label }.joined(separator: " + ")
+        case .keyboard(let tokens):
+            return KeyToken.summary(tokens)
+        }
     }
 
     // Matches SettingsView's grouped section styling.
