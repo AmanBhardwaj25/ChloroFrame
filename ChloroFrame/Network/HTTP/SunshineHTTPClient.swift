@@ -6,7 +6,9 @@
 //
 
 import Foundation
+#if canImport(AppKit)
 import AppKit
+#endif
 import Security
 import CryptoKit
 import CommonCrypto
@@ -265,6 +267,7 @@ final class SunshineHTTPClient: NSObject {
         return apps
     }
 
+    #if canImport(AppKit)
     func fetchBoxArt(id: Int) async -> NSImage? {
         guard let data = try? await getHTTPS("appasset", params: [
             "appid":     String(id),
@@ -272,6 +275,18 @@ final class SunshineHTTPClient: NSObject {
             "AssetIdx":  "0",
         ]) else { return nil }
         return NSImage(data: data)
+    }
+    #endif
+
+    /// Raw box-art bytes, platform-image-agnostic. tvOS (which has no NSImage)
+    /// uses this and builds a UIImage at the call site; the tvOS MVP app list is
+    /// text-only, so this is here for when box art is wired up later.
+    func fetchBoxArtData(id: Int) async -> Data? {
+        try? await getHTTPS("appasset", params: [
+            "appid":     String(id),
+            "AssetType": "2",
+            "AssetIdx":  "0",
+        ])
     }
 
     struct LaunchResult {

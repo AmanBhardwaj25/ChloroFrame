@@ -24,8 +24,13 @@ final class StreamTransport {
     private let rikey: Data
 
     private var videoReceiver:       RTPVideoReceiver?
+    // Audio decode is macOS-only until tvOS gets a libopus build or switches to the
+    // AudioToolbox decoder (port plan 7.4). Guarded so the shared transport compiles
+    // for tvOS without the macOS-arm64 libopus link dependency.
+    #if os(macOS)
     private var audioReceiver:       RTPAudioReceiver?
     private var audioEngine:         AudioEngine?
+    #endif
     private var inputHeartbeatTask:  Task<Void, Never>?
 
     var onENetDisconnect: (() -> Void)?
@@ -54,7 +59,9 @@ final class StreamTransport {
             options: [.latencyCritical, .userInitiatedAllowingIdleSystemSleep],
             reason: "Active stream"
         )
+        #if os(macOS)
         AWDLSuppressor.shared.suppress()
+        #endif
         // Clean up all partially-created resources if anything below throws.
         var startSucceeded = false
         defer {
@@ -65,11 +72,15 @@ final class StreamTransport {
                 }
                 // Stop any receivers/engine that may have been started before the throw.
                 videoReceiver?.stop(); videoReceiver = nil
+                #if os(macOS)
                 audioReceiver?.stop(); audioReceiver = nil
                 audioEngine?.stop();   audioEngine   = nil
+                #endif
                 stats.stop()
                 enet.disconnect()
+                #if os(macOS)
                 AWDLSuppressor.shared.restore()
+                #endif
             }
         }
 
@@ -127,6 +138,7 @@ final class StreamTransport {
 
         stats.start()
 
+        #if os(macOS)
         let engine = AudioEngine()
         try engine.start()
         audioEngine = engine
@@ -137,6 +149,7 @@ final class StreamTransport {
         stats.audioReceiverStatsProvider = { [weak ar] in ar.map { ($0.apparentLoss, $0.reorderDiscarded) } }
         try await ar.start(host: serverHost, serverPort: audioPort, localPort: audioLocalPort, pingPayload: audioPing)
         audioReceiver = ar
+        #endif
 
         // Both sockets are now bound and SS_PING has been sent.
         // Start A/B triggers the server to begin streaming.
@@ -161,13 +174,17 @@ final class StreamTransport {
             ProcessInfo.processInfo.endActivity(activity)
             streamActivity = nil
         }
+        #if os(macOS)
         AWDLSuppressor.shared.restore()
+        #endif
         stats.stop()
         stats.audioStatsProvider = nil
         stats.audioReceiverStatsProvider = nil
         videoReceiver?.stop();          videoReceiver      = nil
+        #if os(macOS)
         audioReceiver?.stop();          audioReceiver      = nil
         audioEngine?.stop();            audioEngine        = nil
+        #endif
         inputHeartbeatTask?.cancel();   inputHeartbeatTask = nil
         enet.disconnect()
     }

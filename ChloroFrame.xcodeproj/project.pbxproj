@@ -12,6 +12,20 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
+		D42AC4FF2FE8399D00DC6900 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = D4EE2D352FD715D600AE587C /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = D42AC4F12FE8399C00DC6900;
+			remoteInfo = ChloroFrameTV;
+		};
+		D42AC5092FE8399D00DC6900 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = D4EE2D352FD715D600AE587C /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = D42AC4F12FE8399C00DC6900;
+			remoteInfo = ChloroFrameTV;
+		};
 		D4EE2D4B2FD715D700AE587C /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
 			containerPortal = D4EE2D352FD715D600AE587C /* Project object */;
@@ -54,6 +68,9 @@
 /* Begin PBXFileReference section */
 		D40C1BE22FD8EF9B009C62E1 /* fullstacksandbox.com.ChloroFrame.Helper */ = {isa = PBXFileReference; explicitFileType = "compiled.mach-o.executable"; includeInIndex = 0; path = fullstacksandbox.com.ChloroFrame.Helper; sourceTree = BUILT_PRODUCTS_DIR; };
 		D40C1BF72FD8F6D2009C62E1 /* fullstacksandbox.com.ChloroFrame.Helper.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; name = fullstacksandbox.com.ChloroFrame.Helper.plist; path = ChloroFrame/Resources/fullstacksandbox.com.ChloroFrame.Helper.plist; sourceTree = SOURCE_ROOT; };
+		D42AC4F22FE8399C00DC6900 /* ChloroFrameTV.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = ChloroFrameTV.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		D42AC4FE2FE8399D00DC6900 /* ChloroFrameTVTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = ChloroFrameTVTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		D42AC5082FE8399D00DC6900 /* ChloroFrameTVUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = ChloroFrameTVUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		D4EE2D3D2FD715D600AE587C /* ChloroFrame.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = ChloroFrame.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		D4EE2D4A2FD715D700AE587C /* ChloroFrameTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = ChloroFrameTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		D4EE2D542FD715D700AE587C /* ChloroFrameUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = ChloroFrameUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -73,6 +90,13 @@
 				Info.plist,
 			);
 			target = D4EE2D3C2FD715D600AE587C /* ChloroFrame */;
+		};
+		D42AC5282FE83E6E00DC6900 /* Exceptions for "ChloroFrame" folder in "ChloroFrameTV" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Video/DisplayConfig.swift,
+			);
+			target = D42AC4F12FE8399C00DC6900 /* ChloroFrameTV */;
 		};
 /* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
@@ -95,11 +119,27 @@
 			path = ChloroFrameHelper;
 			sourceTree = "<group>";
 		};
+		D42AC4F32FE8399C00DC6900 /* ChloroFrameTV */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = ChloroFrameTV;
+			sourceTree = "<group>";
+		};
+		D42AC5012FE8399D00DC6900 /* ChloroFrameTVTests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = ChloroFrameTVTests;
+			sourceTree = "<group>";
+		};
+		D42AC50B2FE8399D00DC6900 /* ChloroFrameTVUITests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = ChloroFrameTVUITests;
+			sourceTree = "<group>";
+		};
 		D4EE2D3F2FD715D600AE587C /* ChloroFrame */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			exceptions = (
 				D40C1BF12FD8F1B7009C62E1 /* Exceptions for "ChloroFrame" folder in "ChloroFrame" target */,
 				D40C1BEF2FD8F178009C62E1 /* Exceptions for "ChloroFrame" folder in "ChloroFrameHelper" target */,
+				D42AC5282FE83E6E00DC6900 /* Exceptions for "ChloroFrame" folder in "ChloroFrameTV" target */,
 			);
 			path = ChloroFrame;
 			sourceTree = "<group>";
@@ -118,6 +158,27 @@
 
 /* Begin PBXFrameworksBuildPhase section */
 		D40C1BDF2FD8EF9B009C62E1 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		D42AC4EF2FE8399C00DC6900 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		D42AC4FB2FE8399D00DC6900 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		D42AC5052FE8399D00DC6900 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -156,6 +217,9 @@
 				D4EE2D4D2FD715D700AE587C /* ChloroFrameTests */,
 				D4EE2D572FD715D700AE587C /* ChloroFrameUITests */,
 				D40C1BE32FD8EF9B009C62E1 /* ChloroFrameHelper */,
+				D42AC4F32FE8399C00DC6900 /* ChloroFrameTV */,
+				D42AC5012FE8399D00DC6900 /* ChloroFrameTVTests */,
+				D42AC50B2FE8399D00DC6900 /* ChloroFrameTVUITests */,
 				D4EE2D3E2FD715D600AE587C /* Products */,
 			);
 			sourceTree = "<group>";
@@ -167,6 +231,9 @@
 				D4EE2D4A2FD715D700AE587C /* ChloroFrameTests.xctest */,
 				D4EE2D542FD715D700AE587C /* ChloroFrameUITests.xctest */,
 				D40C1BE22FD8EF9B009C62E1 /* fullstacksandbox.com.ChloroFrame.Helper */,
+				D42AC4F22FE8399C00DC6900 /* ChloroFrameTV.app */,
+				D42AC4FE2FE8399D00DC6900 /* ChloroFrameTVTests.xctest */,
+				D42AC5082FE8399D00DC6900 /* ChloroFrameTVUITests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -195,6 +262,74 @@
 			productName = ChloroFrameHelper;
 			productReference = D40C1BE22FD8EF9B009C62E1 /* fullstacksandbox.com.ChloroFrame.Helper */;
 			productType = "com.apple.product-type.tool";
+		};
+		D42AC4F12FE8399C00DC6900 /* ChloroFrameTV */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = D42AC5162FE8399D00DC6900 /* Build configuration list for PBXNativeTarget "ChloroFrameTV" */;
+			buildPhases = (
+				D42AC4EE2FE8399C00DC6900 /* Sources */,
+				D42AC4EF2FE8399C00DC6900 /* Frameworks */,
+				D42AC4F02FE8399C00DC6900 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				D42AC4F32FE8399C00DC6900 /* ChloroFrameTV */,
+			);
+			name = ChloroFrameTV;
+			packageProductDependencies = (
+			);
+			productName = ChloroFrameTV;
+			productReference = D42AC4F22FE8399C00DC6900 /* ChloroFrameTV.app */;
+			productType = "com.apple.product-type.application";
+		};
+		D42AC4FD2FE8399D00DC6900 /* ChloroFrameTVTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = D42AC5172FE8399D00DC6900 /* Build configuration list for PBXNativeTarget "ChloroFrameTVTests" */;
+			buildPhases = (
+				D42AC4FA2FE8399D00DC6900 /* Sources */,
+				D42AC4FB2FE8399D00DC6900 /* Frameworks */,
+				D42AC4FC2FE8399D00DC6900 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				D42AC5002FE8399D00DC6900 /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				D42AC5012FE8399D00DC6900 /* ChloroFrameTVTests */,
+			);
+			name = ChloroFrameTVTests;
+			packageProductDependencies = (
+			);
+			productName = ChloroFrameTVTests;
+			productReference = D42AC4FE2FE8399D00DC6900 /* ChloroFrameTVTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+		D42AC5072FE8399D00DC6900 /* ChloroFrameTVUITests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = D42AC5182FE8399D00DC6900 /* Build configuration list for PBXNativeTarget "ChloroFrameTVUITests" */;
+			buildPhases = (
+				D42AC5042FE8399D00DC6900 /* Sources */,
+				D42AC5052FE8399D00DC6900 /* Frameworks */,
+				D42AC5062FE8399D00DC6900 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				D42AC50A2FE8399D00DC6900 /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				D42AC50B2FE8399D00DC6900 /* ChloroFrameTVUITests */,
+			);
+			name = ChloroFrameTVUITests;
+			packageProductDependencies = (
+			);
+			productName = ChloroFrameTVUITests;
+			productReference = D42AC5082FE8399D00DC6900 /* ChloroFrameTVUITests.xctest */;
+			productType = "com.apple.product-type.bundle.ui-testing";
 		};
 		D4EE2D3C2FD715D600AE587C /* ChloroFrame */ = {
 			isa = PBXNativeTarget;
@@ -278,6 +413,17 @@
 					D40C1BE12FD8EF9B009C62E1 = {
 						CreatedOnToolsVersion = 26.1;
 					};
+					D42AC4F12FE8399C00DC6900 = {
+						CreatedOnToolsVersion = 26.1;
+					};
+					D42AC4FD2FE8399D00DC6900 = {
+						CreatedOnToolsVersion = 26.1;
+						TestTargetID = D42AC4F12FE8399C00DC6900;
+					};
+					D42AC5072FE8399D00DC6900 = {
+						CreatedOnToolsVersion = 26.1;
+						TestTargetID = D42AC4F12FE8399C00DC6900;
+					};
 					D4EE2D3C2FD715D600AE587C = {
 						CreatedOnToolsVersion = 26.1;
 					};
@@ -309,11 +455,35 @@
 				D4EE2D492FD715D700AE587C /* ChloroFrameTests */,
 				D4EE2D532FD715D700AE587C /* ChloroFrameUITests */,
 				D40C1BE12FD8EF9B009C62E1 /* ChloroFrameHelper */,
+				D42AC4F12FE8399C00DC6900 /* ChloroFrameTV */,
+				D42AC4FD2FE8399D00DC6900 /* ChloroFrameTVTests */,
+				D42AC5072FE8399D00DC6900 /* ChloroFrameTVUITests */,
 			);
 		};
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
+		D42AC4F02FE8399C00DC6900 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		D42AC4FC2FE8399D00DC6900 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		D42AC5062FE8399D00DC6900 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		D4EE2D3B2FD715D600AE587C /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -345,6 +515,27 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		D42AC4EE2FE8399C00DC6900 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		D42AC4FA2FE8399D00DC6900 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		D42AC5042FE8399D00DC6900 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		D4EE2D392FD715D600AE587C /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -369,6 +560,16 @@
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
+		D42AC5002FE8399D00DC6900 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = D42AC4F12FE8399C00DC6900 /* ChloroFrameTV */;
+			targetProxy = D42AC4FF2FE8399D00DC6900 /* PBXContainerItemProxy */;
+		};
+		D42AC50A2FE8399D00DC6900 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = D42AC4F12FE8399C00DC6900 /* ChloroFrameTV */;
+			targetProxy = D42AC5092FE8399D00DC6900 /* PBXContainerItemProxy */;
+		};
 		D4EE2D4C2FD715D700AE587C /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
 			target = D4EE2D3C2FD715D600AE587C /* ChloroFrame */;
@@ -411,6 +612,161 @@
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
 				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
+		D42AC5102FE8399D00DC6900 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = "App Icon & Top Shelf Image";
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = UDZPCZ26XS;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UIUserInterfaceStyle = Automatic;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = fullstacksandbox.com.ChloroFrameTV;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = appletvos;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 3;
+				TVOS_DEPLOYMENT_TARGET = 17.6;
+			};
+			name = Debug;
+		};
+		D42AC5112FE8399D00DC6900 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = "App Icon & Top Shelf Image";
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = UDZPCZ26XS;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UIUserInterfaceStyle = Automatic;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = fullstacksandbox.com.ChloroFrameTV;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = appletvos;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 3;
+				TVOS_DEPLOYMENT_TARGET = 17.6;
+				VALIDATE_PRODUCT = YES;
+			};
+			name = Release;
+		};
+		D42AC5122FE8399D00DC6900 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = UDZPCZ26XS;
+				GENERATE_INFOPLIST_FILE = YES;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = fullstacksandbox.com.ChloroFrameTVTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = appletvos;
+				STRING_CATALOG_GENERATE_SYMBOLS = NO;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 3;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/ChloroFrameTV.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/ChloroFrameTV";
+				TVOS_DEPLOYMENT_TARGET = 26.1;
+			};
+			name = Debug;
+		};
+		D42AC5132FE8399D00DC6900 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = UDZPCZ26XS;
+				GENERATE_INFOPLIST_FILE = YES;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = fullstacksandbox.com.ChloroFrameTVTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = appletvos;
+				STRING_CATALOG_GENERATE_SYMBOLS = NO;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 3;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/ChloroFrameTV.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/ChloroFrameTV";
+				TVOS_DEPLOYMENT_TARGET = 26.1;
+				VALIDATE_PRODUCT = YES;
+			};
+			name = Release;
+		};
+		D42AC5142FE8399D00DC6900 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = UDZPCZ26XS;
+				GENERATE_INFOPLIST_FILE = YES;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = fullstacksandbox.com.ChloroFrameTVUITests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = appletvos;
+				STRING_CATALOG_GENERATE_SYMBOLS = NO;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 3;
+				TEST_TARGET_NAME = ChloroFrameTV;
+				TVOS_DEPLOYMENT_TARGET = 26.1;
+			};
+			name = Debug;
+		};
+		D42AC5152FE8399D00DC6900 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = UDZPCZ26XS;
+				GENERATE_INFOPLIST_FILE = YES;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = fullstacksandbox.com.ChloroFrameTVUITests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = appletvos;
+				STRING_CATALOG_GENERATE_SYMBOLS = NO;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 3;
+				TEST_TARGET_NAME = ChloroFrameTV;
+				TVOS_DEPLOYMENT_TARGET = 26.1;
+				VALIDATE_PRODUCT = YES;
 			};
 			name = Release;
 		};
@@ -698,6 +1054,33 @@
 			buildConfigurations = (
 				D40C1BE72FD8EF9B009C62E1 /* Debug */,
 				D40C1BE82FD8EF9B009C62E1 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		D42AC5162FE8399D00DC6900 /* Build configuration list for PBXNativeTarget "ChloroFrameTV" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				D42AC5102FE8399D00DC6900 /* Debug */,
+				D42AC5112FE8399D00DC6900 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		D42AC5172FE8399D00DC6900 /* Build configuration list for PBXNativeTarget "ChloroFrameTVTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				D42AC5122FE8399D00DC6900 /* Debug */,
+				D42AC5132FE8399D00DC6900 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		D42AC5182FE8399D00DC6900 /* Build configuration list for PBXNativeTarget "ChloroFrameTVUITests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				D42AC5142FE8399D00DC6900 /* Debug */,
+				D42AC5152FE8399D00DC6900 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;

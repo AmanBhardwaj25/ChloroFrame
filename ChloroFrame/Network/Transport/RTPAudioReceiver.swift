@@ -56,9 +56,14 @@ final class RTPAudioReceiver {
             host: .init("0.0.0.0"),
             port: .init(rawValue: localPort)!
         )
+        // macOS pins the audio socket to Wi-Fi so replies can't route over awdl0.
+        // tvOS drops interface discovery (port plan 6.4), removing the NetworkMonitor
+        // dependency from the tvOS build.
+        #if os(macOS)
         if let iface = NetworkMonitor.shared.wifiInterface {
             params.requiredInterface = iface
         }
+        #endif
 
         let c = NWConnection(
             to: .hostPort(host: .init(host), port: .init(rawValue: serverPort)!),

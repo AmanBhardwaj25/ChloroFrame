@@ -108,7 +108,11 @@ final class RTPVideoReceiver {
 
         // Opt-D equivalent of params.requiredInterface: pin to the Wi-Fi interface
         // so replies can't route over awdl0. NetworkMonitor has been running since
-        // app launch; the interface is already known.
+        // app launch; the interface is already known. macOS-only: tvOS has no AWDL
+        // competition concern (often Ethernet) and does not do interface discovery
+        // (port plan 6.4), so the IP_BOUND_IF lock and NetworkMonitor dependency are
+        // dropped there.
+        #if os(macOS)
         if let iface = NetworkMonitor.shared.wifiInterface {
             var ifIndex = UInt32(iface.index)
             setsockopt(fd, IPPROTO_IP, IP_BOUND_IF, &ifIndex, socklen_t(MemoryLayout<UInt32>.size))
@@ -116,6 +120,7 @@ final class RTPVideoReceiver {
         } else {
             print("[RTPVideoReceiver] WARNING: no cached WiFi interface; AWDL lock skipped")
         }
+        #endif
 
         var local = sockaddr_in()
         local.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)

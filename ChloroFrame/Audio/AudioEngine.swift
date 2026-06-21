@@ -26,32 +26,11 @@ import AVFoundation
 
 private let alog = NoopLog()
 
-enum AudioEngineState {
-    case stopped, priming, running
-
-    var label: String {
-        switch self {
-        case .stopped: return "stopped"
-        case .priming: return "priming"
-        case .running: return "running"
-        }
-    }
-}
+// AudioEngineState and AudioEngineStats now live in AudioEngineStats.swift so they
+// can be shared with targets that do not link the decode path (e.g. tvOS).
 
 enum AudioEngineError: Error {
     case decoderCreationFailed(Int32)
-}
-
-struct AudioEngineStats {
-    let state:        AudioEngineState
-    let bufferedMs:   Double
-    let underrunCount: Int
-    let overrunCount: Int
-    let decodeCount:  Int
-    let driftDrops:   Int    // packets skipped by the drift servo (buffer too full)
-    let driftInserts: Int    // packets duplicated by the drift servo (buffer too empty)
-    let latencyClampMs: Double  // cumulative ms of oldest audio skipped by the max-latency clamp
-    let targetMs:     Double    // current adaptive-jitter-buffer target latency
 }
 
 final class AudioEngine: @unchecked Sendable {
