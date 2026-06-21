@@ -322,6 +322,12 @@ final class StreamStatsCollector {
         // One line per second while streaming when verbose logging is enabled
         // (defaults write ... verboseStreamLogs -bool YES) — this is the before/after
         // artifact for pacing work. With verbose off, no string is even built.
+        //
+        // macOS-only: these lines feed the no-op SessionLog / gated StreamLog and build
+        // their strings eagerly (the `let vLine/aLine` below run regardless of the sink).
+        // On tvOS the audio stats are absent, and the strict String(format:) validator
+        // rejects the audio line's specifiers, flooding the console. Guard it out there.
+        #if os(macOS)
         if draws > 0 {
             StreamLog.log("[ChloroFrame][video-stats] fps=\(String(format: "%.1f", fps)) draw=\(String(format: "%.2f", drawInterval))ms p99=\(String(format: "%.2f", drawIntervalP99))ms max=\(String(format: "%.2f", drawIntervalMax))ms repeats=\(String(format: "%.1f", repeatsPerSec))/s overwrites=\(String(format: "%.1f", overwrittenPerSec))/s lateDrops=\(String(format: "%.1f", lateDroppedPerSec))/s qAvg=\(String(format: "%.2f", queueDepthAvg)) qPeak=\(snap.snapQueueHighWatermark) age=\(String(format: "%.1f", frameAge))ms")
         }
@@ -340,6 +346,7 @@ final class StreamStatsCollector {
             audio?.driftDrops ?? 0, audio?.driftInserts ?? 0, audio?.latencyClampMs ?? 0,
             audio?.decodeCount ?? 0, audioRx?.loss ?? 0, audioRx?.reorder ?? 0)
         SessionLog.shared.line(vLine + "  ||  " + aLine)
+        #endif
 
         current = StreamStats(
             reqWidth: requestedWidth,

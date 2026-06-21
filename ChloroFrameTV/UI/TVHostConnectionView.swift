@@ -31,7 +31,7 @@ struct TVHostConnectionView: View {
         case appList(ServerInfo, [SunshineApp])
         case launching(SunshineApp)
         case negotiating(SunshineApp)
-        case negotiated(SunshineApp, StreamDescriptor)
+        case streaming(SunshineApp, StreamTransport, MetalVideoRenderer, Int)  // Int = fps
         case failed(String)
     }
 
@@ -41,11 +41,17 @@ struct TVHostConnectionView: View {
     }
 
     var body: some View {
-        ZStack {
-            TVTheme.background.ignoresSafeArea()
-            content
-                .padding(80)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        Group {
+            if case .streaming(let app, let transport, let renderer, let fps) = phase {
+                streamingView(app: app, transport: transport, renderer: renderer, fps: fps)
+            } else {
+                ZStack {
+                    TVTheme.background.ignoresSafeArea()
+                    content
+                        .padding(80)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
+            }
         }
         .task { await connect() }
     }
@@ -65,8 +71,9 @@ struct TVHostConnectionView: View {
             status("Launching \(app.title)…", spinner: true)
         case .negotiating(let app):
             status("Negotiating stream for \(app.title)…", spinner: true)
-        case .negotiated(let app, let stream):
-            negotiated(app, stream)
+        case .streaming:
+            // Rendered fullscreen in `body`; nothing to show inside the padded chrome.
+            Color.black
         case .failed(let message):
             failed(message)
         }
@@ -157,38 +164,18 @@ struct TVHostConnectionView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
-    private func negotiated(_ app: SunshineApp, _ stream: StreamDescriptor) -> some View {
-        VStack(spacing: 24) {
-            Image(systemName: "checkmark.seal.fill")
-                .font(.system(size: 64))
-                .foregroundStyle(.green)
-            Text("Stream negotiated")
-                .font(.system(size: 40, weight: .bold))
-                .foregroundStyle(.white)
-            VStack(spacing: 6) {
-                Text(app.title).font(.title2).foregroundStyle(.white)
-                Text("\(codecName(stream.videoCodec)) · \(stream.dynamicRangeMode == 0 ? "SDR" : "HDR") · host \(stream.serverHost)")
-                    .font(.title3)
-                    .foregroundStyle(.secondary)
-                Text("video port \(stream.videoServerPort) → \(stream.videoLocalPort)  ·  control \(stream.controlServerPort)")
-                    .font(.callout)
-                    .foregroundStyle(.tertiary)
-            }
-            Text("Phase 4 stops here. Video rendering comes next.")
-                .font(.callout)
-                .foregroundStyle(.tertiary)
-                .padding(.top, 8)
-            Button(role: .destructive) {
+    private func streamingView(app: SunshineApp, transport: StreamTransport, renderer: MetalVideoRenderer, fps: Int) -> some View {
+        TVMetalVideoView(renderer: renderer, streamFps: fps)
+            .ignoresSafeArea()
+            // Menu/Back on the remote stops the session: tear down the transport,
+            // cancel the app on the host, and pop back to the host list.
+            .onExitCommand {
+                transport.stop()
                 Task {
                     await client.cancelApp(id: app.id)
                     dismiss()
                 }
-            } label: {
-                Label("Stop Session & Back", systemImage: "stop.fill")
-                    .padding(.horizontal, 16)
             }
-            .padding(.top, 12)
-        }
     }
 
     private func failed(_ message: String) -> some View {
@@ -264,17 +251,25 @@ struct TVHostConnectionView: View {
         )
         do {
             let stream = try await RTSPClient().negotiate(sessionURL: sessionURL, config: config)
-            phase = .negotiated(app, stream)
-        } catch {
-            phase = .failed(error.localizedDescription)
-        }
-    }
 
-    private func codecName(_ c: VideoCodec) -> String {
-        switch c {
-        case .h264: return "H.264"
-        case .hevc: return "H.265"
-        case .av1:  return "AV1"
+            guard let renderer = MetalVideoRenderer(isHdr: stream.dynamicRangeMode != 0) else {
+                await client.cancelApp(id: app.id)
+                phase = .failed("Metal renderer unavailable")
+                return
+            }
+            let transport = StreamTransport(descriptor: stream, config: config, rikey: result.rikey)
+            renderer.stats = transport.stats
+            renderer.setStreamFps(config.fps)
+            transport.onVideoTexture = { [weak renderer] pixelBuffer, pts in
+                renderer?.enqueueFrame(pixelBuffer, pts: pts)
+            }
+            transport.onClockReset = { [weak renderer] in renderer?.resetClockAnchor() }
+
+            try await transport.start()
+            phase = .streaming(app, transport, renderer, config.fps)
+        } catch {
+            await client.cancelApp(id: app.id)
+            phase = .failed(error.localizedDescription)
         }
     }
 }

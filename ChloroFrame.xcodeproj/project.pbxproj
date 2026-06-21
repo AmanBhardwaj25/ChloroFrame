@@ -111,6 +111,8 @@
 				Network/Transport/RTPVideoReceiver.swift,
 				Network/Transport/StreamTransport.swift,
 				Video/DisplayConfig.swift,
+				Video/MetalVideoRenderer.swift,
+				Video/Shaders.metal,
 				Video/StreamStatsCollector.swift,
 				Video/VideoDecoder.swift,
 				Video/VideoFormatHelper.swift,

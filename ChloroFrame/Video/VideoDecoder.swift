@@ -56,10 +56,20 @@ class VideoDecoder {
             kCVPixelBufferIOSurfacePropertiesKey: [:] as CFDictionary,
         ]
 
+        // The simulator has no hardware video decoder, so requiring one makes the
+        // VTDecompressionSession fail to create. Relax the requirement there (software
+        // fallback) so the pipeline can be exercised on the tvOS/iOS simulator; real
+        // devices (and macOS) still require the hardware media engine.
+        #if targetEnvironment(simulator)
+        let decoderSpecification: [CFString: Any] = [
+            kVTVideoDecoderSpecification_EnableHardwareAcceleratedVideoDecoder: true,
+        ]
+        #else
         let decoderSpecification: [CFString: Any] = [
             kVTVideoDecoderSpecification_EnableHardwareAcceleratedVideoDecoder: true,
             kVTVideoDecoderSpecification_RequireHardwareAcceleratedVideoDecoder: true,
         ]
+        #endif
 
         let sessionConfiguration: [CFString: Any] = [
             kVTDecompressionPropertyKey_RealTime: true,
