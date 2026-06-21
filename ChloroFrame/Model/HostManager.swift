@@ -13,7 +13,7 @@ import Observation
 
 // MARK: - Model
 
-struct Host: Identifiable, Codable {
+struct Host: Identifiable, Codable, Hashable {
     var id = UUID()
     var name: String
     var address: String

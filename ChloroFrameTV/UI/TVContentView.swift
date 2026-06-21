@@ -2,62 +2,134 @@
 //  TVContentView.swift
 //  ChloroFrameTV
 //
-//  Created by Aman Bhardwaj on 6/21/26.
-//
-//  Phase 1 placeholder host-list screen. Its only job for now is to prove the
-//  target launches, the tvOS focus engine works with the Siri Remote, and the
-//  visual language reads at 10 feet. Real host management, pairing, app list,
-//  and streaming arrive in Phase 3 onward.
+//  Host list (Phase 3). Lists saved hosts as focusable cards, lets the user add a
+//  host by IP, and pushes the connection/pairing/negotiation flow when one is
+//  selected. Host data and persistence are shared with macOS via HostManager.
 //
 
 import SwiftUI
 
 struct TVContentView: View {
-    // Brand colors inlined for the skeleton so this view does not depend on a
-    // shared asset catalog yet. These approximate the macOS CFBackground / CFGold
-    // palette; swap to a tvOS asset catalog during the UI pass.
-    private static let background = Color(red: 0.05, green: 0.06, blue: 0.08)
-    private static let gold = Color(red: 0.83, green: 0.69, blue: 0.36)
+    @State private var hosts = HostManager()
+    @State private var showAddHost = false
 
     var body: some View {
-        ZStack {
-            TVContentView.background.ignoresSafeArea()
-
-            VStack(alignment: .leading, spacing: 40) {
-                header
-
-                Text("No hosts yet")
-                    .font(.title2)
-                    .foregroundStyle(.secondary)
-
-                Button {
-                    // Phase 3: present the add-host flow.
-                } label: {
-                    Label("Add Host", systemImage: "plus.circle.fill")
-                        .padding(.horizontal, 12)
-                }
-
-                Spacer()
+        NavigationStack {
+            ZStack {
+                TVTheme.background.ignoresSafeArea()
+                content
             }
-            .padding(80)
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .navigationDestination(for: Host.self) { host in
+                TVHostConnectionView(host: host)
+            }
         }
+        .sheet(isPresented: $showAddHost) {
+            TVAddHostView { name, address, port in
+                hosts.add(name: name, address: address, port: port)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var content: some View {
+        VStack(alignment: .leading, spacing: 48) {
+            header
+
+            if hosts.hosts.isEmpty {
+                emptyState
+            } else {
+                hostGrid
+            }
+
+            Spacer()
+        }
+        .padding(80)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
     private var header: some View {
         HStack(spacing: 16) {
             Image(systemName: "play.tv.fill")
-                .font(.system(size: 44, weight: .semibold))
-                .foregroundStyle(TVContentView.gold)
-            VStack(alignment: .leading, spacing: 4) {
+                .font(.system(size: 40, weight: .semibold))
+                .foregroundStyle(TVTheme.gold)
+            VStack(alignment: .leading, spacing: 2) {
                 Text("ChloroFrame")
-                    .font(.system(size: 56, weight: .bold))
+                    .font(.system(size: 52, weight: .bold))
                     .foregroundStyle(.white)
                 Text("Apple TV  ·  alpha")
                     .font(.title3)
                     .foregroundStyle(.secondary)
             }
+            Spacer()
+            Button {
+                showAddHost = true
+            } label: {
+                Label("Add Host", systemImage: "plus.circle.fill")
+                    .padding(.horizontal, 12)
+            }
         }
+    }
+
+    private var emptyState: some View {
+        VStack(spacing: 12) {
+            Text("No hosts yet")
+                .font(.title2)
+                .foregroundStyle(.secondary)
+            Text("Add a host by its IP address to get started.")
+                .font(.body)
+                .foregroundStyle(.tertiary)
+        }
+        .frame(maxWidth: .infinity, alignment: .center)
+        .padding(.top, 80)
+    }
+
+    private var hostGrid: some View {
+        ScrollView {
+            LazyVGrid(
+                columns: [GridItem(.adaptive(minimum: 320), spacing: 32)],
+                spacing: 32
+            ) {
+                ForEach(hosts.hosts) { host in
+                    NavigationLink(value: host) {
+                        TVHostCard(host: host)
+                    }
+                    .buttonStyle(.card)
+                    .contextMenu {
+                        Button(role: .destructive) {
+                            hosts.remove(host)
+                        } label: {
+                            Label("Remove", systemImage: "trash")
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+private struct TVHostCard: View {
+    let host: Host
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Image(systemName: "desktopcomputer")
+                .font(.system(size: 44, weight: .light))
+                .foregroundStyle(TVTheme.gold)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(host.name.isEmpty ? host.address : host.name)
+                    .font(.title3)
+                    .fontWeight(.semibold)
+                    .foregroundStyle(.white)
+                    .lineLimit(1)
+                Text(host.address)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+        }
+        .padding(28)
+        .frame(maxWidth: .infinity, minHeight: 200, alignment: .topLeading)
+        .background(TVTheme.surface, in: RoundedRectangle(cornerRadius: 18))
     }
 }
 
