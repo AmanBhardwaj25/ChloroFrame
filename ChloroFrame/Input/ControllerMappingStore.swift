@@ -39,16 +39,9 @@ struct GamepadControlDisplay: Equatable {
     let symbolName: String?
 }
 
-enum GamepadButton: String, CaseIterable, Codable, Identifiable {
-    case a, b, x, y
-    case leftBumper, rightBumper
-    case leftTrigger, rightTrigger
-    case dpadUp, dpadDown, dpadLeft, dpadRight
-    case start, back, guide
-    case leftStickButton, rightStickButton
-
-    var id: String { rawValue }
-
+// GamepadButton's cases + GameController mapping live in GamepadButton.swift (shared with
+// tvOS). The display-label layer below is macOS-UI-only, so it stays here as an extension.
+extension GamepadButton {
     var label: String {
         display(style: .xbox).label
     }

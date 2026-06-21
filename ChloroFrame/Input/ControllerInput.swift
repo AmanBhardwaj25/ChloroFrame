@@ -27,32 +27,8 @@ import Combine
 // Canonical control -> GameController element. The ONE place this mapping lives, shared by the
 // setup page (which controls are present) and the runtime translator (reading their state), so a
 // binding's source means the same physical control on both sides.
-extension GamepadButton {
-    func element(in eg: GCExtendedGamepad) -> GCControllerButtonInput? {
-        switch self {
-        case .a:                return eg.buttonA
-        case .b:                return eg.buttonB
-        case .x:                return eg.buttonX
-        case .y:                return eg.buttonY
-        case .leftBumper:       return eg.leftShoulder
-        case .rightBumper:      return eg.rightShoulder
-        case .leftTrigger:      return eg.leftTrigger
-        case .rightTrigger:     return eg.rightTrigger
-        case .dpadUp:           return eg.dpad.up
-        case .dpadDown:         return eg.dpad.down
-        case .dpadLeft:         return eg.dpad.left
-        case .dpadRight:        return eg.dpad.right
-        case .start:            return eg.buttonMenu
-        case .back:             return eg.buttonOptions
-        case .guide:            return eg.buttonHome
-        case .leftStickButton:  return eg.leftThumbstickButton
-        case .rightStickButton: return eg.rightThumbstickButton
-        }
-    }
-
-    /// Whether this control's host effect is an analog trigger (set the trigger byte) vs a flag.
-    var isAnalogTrigger: Bool { self == .leftTrigger || self == .rightTrigger }
-}
+// GamepadButton.element(in:) and .isAnalogTrigger now live in GamepadButton.swift (shared
+// with tvOS).
 
 @MainActor
 final class ControllerInput: ObservableObject {

@@ -21,10 +21,8 @@ import GameController
 import AppKit
 
 @MainActor
-final class ControllerTranslator {
+final class ControllerTranslator: ControllerTranslatorBase {
 
-    private weak var transport: StreamTransport?
-    private let controllerNumber = 0
     private var bindings: [ControllerBinding]
     private var learnedButtons: [LearnedButton] = []
     private var deviceKey: String?           // hardware id of the controller whose config is loaded
@@ -43,12 +41,12 @@ final class ControllerTranslator {
     private var heldVK: [Int: Int] = [:]           // vk -> refcount across all active kb bindings
 
     init(transport: StreamTransport) {
-        self.transport = transport
         // Load the connected controller's config (bindings + learned/paddle buttons).
         let (key, cfg) = ControllerConfigStore.loadForPrimaryController()
         self.deviceKey = cfg?.hardwareID ?? key
         self.bindings = cfg?.bindings ?? []
         self.learnedButtons = cfg?.learnedButtons ?? []
+        super.init(transport: transport)
     }
 
     /// Reload config for the currently-connected controller (after a hot-plug).
@@ -202,7 +200,7 @@ final class ControllerTranslator {
         return (state, kbActive)
     }
 
-    private func axis(_ v: Float) -> Int16 { Int16(clamping: Int((v * 32767).rounded())) }
+    // axis(_:) is provided by ControllerTranslatorBase.
 
     // MARK: - Keyboard edges
 
@@ -236,26 +234,13 @@ final class ControllerTranslator {
 
     // MARK: - Send
 
-    private func activeGamepad() -> GCController? {
-        GCController.controllers().first { $0.extendedGamepad != nil }
-    }
+    // activeGamepad(), sendArrival(for:), and sendGamepad(_:mask:) are provided by
+    // ControllerTranslatorBase.
 
     private func sendArrivalIfNeeded() {
         guard !arrivalSent, let gp = activeGamepad() else { return }
-        let type: UInt8
-        if gp.physicalInputProfile is GCDualSenseGamepad || gp.physicalInputProfile is GCDualShockGamepad { type = 2 }
-        else if gp.physicalInputProfile is GCXboxGamepad { type = 1 }
-        else { type = 0 }
-        let packet = ControllerWire.arrival(controllerNumber: controllerNumber, type: type,
-                                            capabilities: 0, supportedButtonFlags: 0x0000_FFFF)
-        transport?.sendInput(packet: packet, channel: ControllerWire.channelGamepad(controllerNumber))
+        sendArrival(for: gp)
         arrivalSent = true
-    }
-
-    private func sendGamepad(_ state: HostGamepadState, mask: UInt16) {
-        let packet = ControllerWire.multiController(controllerNumber: controllerNumber,
-                                                    activeGamepadMask: mask, state: state)
-        transport?.sendInput(packet: packet, channel: ControllerWire.channelGamepad(controllerNumber))
     }
 
     private func sendKey(vk: Int, down: Bool) {

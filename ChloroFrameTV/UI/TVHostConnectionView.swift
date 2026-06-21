@@ -31,7 +31,7 @@ struct TVHostConnectionView: View {
         case appList(ServerInfo, [SunshineApp])
         case launching(SunshineApp)
         case negotiating(SunshineApp)
-        case streaming(SunshineApp, StreamTransport, MetalVideoRenderer, Int)  // Int = fps
+        case streaming(SunshineApp, StreamTransport, MetalVideoRenderer, TVControllerTranslator, Int)  // Int = fps
         case failed(String)
     }
 
@@ -42,8 +42,8 @@ struct TVHostConnectionView: View {
 
     var body: some View {
         Group {
-            if case .streaming(let app, let transport, let renderer, let fps) = phase {
-                streamingView(app: app, transport: transport, renderer: renderer, fps: fps)
+            if case .streaming(let app, let transport, let renderer, let controller, let fps) = phase {
+                streamingView(app: app, transport: transport, renderer: renderer, controller: controller, fps: fps)
             } else {
                 ZStack {
                     TVTheme.background.ignoresSafeArea()
@@ -164,12 +164,14 @@ struct TVHostConnectionView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
-    private func streamingView(app: SunshineApp, transport: StreamTransport, renderer: MetalVideoRenderer, fps: Int) -> some View {
+    private func streamingView(app: SunshineApp, transport: StreamTransport, renderer: MetalVideoRenderer, controller: TVControllerTranslator, fps: Int) -> some View {
         TVMetalVideoView(renderer: renderer, streamFps: fps)
             .ignoresSafeArea()
-            // Menu/Back on the remote stops the session: tear down the transport,
-            // cancel the app on the host, and pop back to the host list.
+            // Menu/Back on the remote stops the session: release the pad, tear down the
+            // transport, cancel the app on the host, and pop back to the host list.
             .onExitCommand {
+                controller.releaseAll()
+                controller.stop()
                 transport.stop()
                 Task {
                     await client.cancelApp(id: app.id)
@@ -266,7 +268,9 @@ struct TVHostConnectionView: View {
             transport.onClockReset = { [weak renderer] in renderer?.resetClockAnchor() }
 
             try await transport.start()
-            phase = .streaming(app, transport, renderer, config.fps)
+            let controller = TVControllerTranslator(transport: transport)
+            controller.start()
+            phase = .streaming(app, transport, renderer, controller, config.fps)
         } catch {
             await client.cancelApp(id: app.id)
             phase = .failed(error.localizedDescription)
