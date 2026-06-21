@@ -98,7 +98,11 @@
 				App/Logging.swift,
 				App/SessionLog.swift,
 				App/StreamLog.swift,
+				Audio/AudioEngine.swift,
 				Audio/AudioEngineStats.swift,
+				Audio/AudioPacket.swift,
+				Audio/AudioPacketDecoder.swift,
+				Audio/AudioRingBuffer.swift,
 				Model/HostManager.swift,
 				Network/FEC/nanors_impl.c,
 				Network/FEC/NanorsDecoder.swift,
@@ -107,6 +111,7 @@
 				Network/HTTP/SunshineHTTPClient.swift,
 				Network/RTSP/RTSPClient.swift,
 				Network/Transport/ENetClient.swift,
+				Network/Transport/RTPAudioReceiver.swift,
 				Network/Transport/RtpVideoQueue.swift,
 				Network/Transport/RTPVideoReceiver.swift,
 				Network/Transport/StreamTransport.swift,
@@ -646,7 +651,10 @@
 				DEVELOPMENT_TEAM = UDZPCZ26XS;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
-				HEADER_SEARCH_PATHS = "$(PROJECT_DIR)/ChloroFrame/Network/FEC";
+				HEADER_SEARCH_PATHS = (
+					"$(PROJECT_DIR)/ChloroFrame/Network/FEC",
+					"$(PROJECT_DIR)/ChloroFrame/Vendor/opus/include",
+				);
 				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "ChloroFrame connects to your game streaming host over the local network.";
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				INFOPLIST_KEY_UIUserInterfaceStyle = Automatic;
@@ -666,7 +674,7 @@
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = 3;
-				TVOS_DEPLOYMENT_TARGET = 17.6;
+				TVOS_DEPLOYMENT_TARGET = 18.6;
 			};
 			name = Debug;
 		};
@@ -680,7 +688,10 @@
 				DEVELOPMENT_TEAM = UDZPCZ26XS;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
-				HEADER_SEARCH_PATHS = "$(PROJECT_DIR)/ChloroFrame/Network/FEC";
+				HEADER_SEARCH_PATHS = (
+					"$(PROJECT_DIR)/ChloroFrame/Network/FEC",
+					"$(PROJECT_DIR)/ChloroFrame/Vendor/opus/include",
+				);
 				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "ChloroFrame connects to your game streaming host over the local network.";
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				INFOPLIST_KEY_UIUserInterfaceStyle = Automatic;
@@ -700,7 +711,7 @@
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = 3;
-				TVOS_DEPLOYMENT_TARGET = 17.6;
+				TVOS_DEPLOYMENT_TARGET = 18.6;
 				VALIDATE_PRODUCT = YES;
 			};
 			name = Release;

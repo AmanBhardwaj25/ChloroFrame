@@ -39,14 +39,14 @@ final class NanorsDecoder: ReedSolomonCoder {
             let len = min(src.count, blockSize)
             flat.withUnsafeMutableBytes { dst in
                 src.withUnsafeBytes { s in
-                    memcpy(dst.baseAddress!.advanced(by: i * blockSize),
-                           s.baseAddress!, len)
+                    _ = memcpy(dst.baseAddress!.advanced(by: i * blockSize),
+                               s.baseAddress!, len)
                 }
             }
         }
 
         // Build C-compatible marks (0 = present, 1 = missing).
-        var cmarks = marks.prefix(total).map { $0 ? UInt8(1) : UInt8(0) }
+        let cmarks = marks.prefix(total).map { $0 ? UInt8(1) : UInt8(0) }
 
         let ret: Int32 = flat.withUnsafeMutableBytes { flatPtr in
             cmarks.withUnsafeBytes { marksPtr in

@@ -14,6 +14,7 @@
 import Foundation
 import Synchronization
 import AudioToolbox
+import CoreAudio   // UnsafeMutableAudioBufferListPointer (no longer re-exported by AudioToolbox on current SDKs)
 
 final class AudioRingBuffer: @unchecked Sendable {
 

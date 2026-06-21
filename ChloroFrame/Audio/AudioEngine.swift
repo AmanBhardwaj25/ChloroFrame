@@ -166,6 +166,14 @@ final class AudioEngine: @unchecked Sendable {
     /// if the RTP receiver starts immediately after. Throws if the Opus decoder fails to
     /// initialize. Caller must NOT be on audioQueue (deadlock).
     func start() throws {
+        #if os(tvOS)
+        // tvOS requires an active AVAudioSession before AVAudioEngine can output audio
+        // (macOS has no AVAudioSession). Best-effort: if this fails, the engine start
+        // below will surface the real error.
+        let session = AVAudioSession.sharedInstance()
+        try? session.setCategory(.playback, mode: .moviePlayback)
+        try? session.setActive(true)
+        #endif
         try audioQueue.sync { [weak self] in try self?.startOnQueue() }
     }
 
