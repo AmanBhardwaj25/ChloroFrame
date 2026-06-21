@@ -94,7 +94,26 @@
 		D42AC5282FE83E6E00DC6900 /* Exceptions for "ChloroFrame" folder in "ChloroFrameTV" target */ = {
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
+				App/AppLogger.swift,
+				App/Logging.swift,
+				App/SessionLog.swift,
+				App/StreamLog.swift,
+				Audio/AudioEngineStats.swift,
+				Model/HostManager.swift,
+				Network/FEC/nanors_impl.c,
+				Network/FEC/NanorsDecoder.swift,
+				Network/FEC/ReedSolomonCoder.swift,
+				Network/FEC/SwiftReedSolomon.swift,
+				Network/HTTP/SunshineHTTPClient.swift,
+				Network/RTSP/RTSPClient.swift,
+				Network/Transport/ENetClient.swift,
+				Network/Transport/RtpVideoQueue.swift,
+				Network/Transport/RTPVideoReceiver.swift,
+				Network/Transport/StreamTransport.swift,
 				Video/DisplayConfig.swift,
+				Video/StreamStatsCollector.swift,
+				Video/VideoDecoder.swift,
+				Video/VideoFormatHelper.swift,
 			);
 			target = D42AC4F12FE8399C00DC6900 /* ChloroFrameTV */;
 		};
@@ -625,6 +644,7 @@
 				DEVELOPMENT_TEAM = UDZPCZ26XS;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				HEADER_SEARCH_PATHS = "$(PROJECT_DIR)/ChloroFrame/Network/FEC";
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				INFOPLIST_KEY_UIUserInterfaceStyle = Automatic;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -637,8 +657,9 @@
 				SDKROOT = appletvos;
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
-				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = nonisolated;
 				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_OBJC_BRIDGING_HEADER = "ChloroFrameTV/ChloroFrameTV-Bridging-Header.h";
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = 3;
@@ -656,6 +677,7 @@
 				DEVELOPMENT_TEAM = UDZPCZ26XS;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				HEADER_SEARCH_PATHS = "$(PROJECT_DIR)/ChloroFrame/Network/FEC";
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				INFOPLIST_KEY_UIUserInterfaceStyle = Automatic;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -668,8 +690,9 @@
 				SDKROOT = appletvos;
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
-				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = nonisolated;
 				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_OBJC_BRIDGING_HEADER = "ChloroFrameTV/ChloroFrameTV-Bridging-Header.h";
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = 3;
