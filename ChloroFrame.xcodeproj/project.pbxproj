@@ -645,6 +645,7 @@
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				HEADER_SEARCH_PATHS = "$(PROJECT_DIR)/ChloroFrame/Network/FEC";
+				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "ChloroFrame connects to your game streaming host over the local network.";
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				INFOPLIST_KEY_UIUserInterfaceStyle = Automatic;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -678,6 +679,7 @@
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				HEADER_SEARCH_PATHS = "$(PROJECT_DIR)/ChloroFrame/Network/FEC";
+				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "ChloroFrame connects to your game streaming host over the local network.";
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				INFOPLIST_KEY_UIUserInterfaceStyle = Automatic;
 				LD_RUNPATH_SEARCH_PATHS = (

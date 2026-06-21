@@ -12,9 +12,11 @@ import SwiftUI
 struct TVContentView: View {
     @State private var hosts = HostManager()
     @State private var showAddHost = false
+    @State private var path: [Host] = []
+    @FocusState private var focusedHost: Host.ID?
 
     var body: some View {
-        NavigationStack {
+        NavigationStack(path: $path) {
             ZStack {
                 TVTheme.background.ignoresSafeArea()
                 content
@@ -26,6 +28,10 @@ struct TVContentView: View {
         .sheet(isPresented: $showAddHost) {
             TVAddHostView { name, address, port in
                 hosts.add(name: name, address: address, port: port)
+                // Move the remote's focus onto the just-added card so the user
+                // does not have to hunt for it after the sheet dismisses.
+                let newID = hosts.hosts.last?.id
+                DispatchQueue.main.async { focusedHost = newID }
             }
         }
     }
@@ -90,10 +96,13 @@ struct TVContentView: View {
                 spacing: 32
             ) {
                 ForEach(hosts.hosts) { host in
-                    NavigationLink(value: host) {
+                    Button {
+                        path.append(host)
+                    } label: {
                         TVHostCard(host: host)
                     }
                     .buttonStyle(.card)
+                    .focused($focusedHost, equals: host.id)
                     .contextMenu {
                         Button(role: .destructive) {
                             hosts.remove(host)
@@ -104,6 +113,7 @@ struct TVContentView: View {
                 }
             }
         }
+        .defaultFocus($focusedHost, hosts.hosts.first?.id)
     }
 }
 
