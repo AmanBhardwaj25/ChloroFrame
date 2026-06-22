@@ -645,20 +645,27 @@ class MetalVideoRenderer {
         // SDR shader output is gamma-encoded [0,1]; HDR shader output is linear extended-range.
         desc.colorProcessingMode = hdr ? .hdr : .perceptual
 
+        guard let scaler = desc.makeSpatialScaler(device: device) else {
+            spatialScaler = nil; intermediateTexture = nil; upscaledTexture = nil
+            return false
+        }
+
+        // Build textures with the usages MetalFX requires for this scaler, rather than
+        // hard-coding them. The intermediate additionally needs .renderTarget (YUV->RGB draws
+        // into it). The output must be .private storage — a CAMetalLayer drawable is neither
+        // private nor allowed as a compute target — so MetalFX scales into it and we blit to
+        // the drawable.
         let inDesc = MTLTextureDescriptor.texture2DDescriptor(
             pixelFormat: .rgba16Float, width: srcW, height: srcH, mipmapped: false)
-        inDesc.usage = [.renderTarget, .shaderRead]
+        inDesc.usage = scaler.colorTextureUsage.union(.renderTarget)
         inDesc.storageMode = .private
 
-        // MetalFX requires its output texture to be .private storage (a CAMetalLayer drawable
-        // is not), so it scales into this private texture and we blit it to the drawable.
         let outDesc = MTLTextureDescriptor.texture2DDescriptor(
             pixelFormat: .rgba16Float, width: dstW, height: dstH, mipmapped: false)
-        outDesc.usage = [.shaderRead, .shaderWrite, .renderTarget]
+        outDesc.usage = scaler.outputTextureUsage
         outDesc.storageMode = .private
 
-        guard let scaler = desc.makeSpatialScaler(device: device),
-              let inter = device.makeTexture(descriptor: inDesc),
+        guard let inter = device.makeTexture(descriptor: inDesc),
               let out = device.makeTexture(descriptor: outDesc) else {
             spatialScaler = nil; intermediateTexture = nil; upscaledTexture = nil
             return false
@@ -1014,7 +1021,9 @@ class MetalVideoRenderer {
         // decoded frame; otherwise (and when MetalFX is unavailable) render straight to the
         // drawable, which the compositor scales bilinearly as before.
         let dstW = drawable.texture.width, dstH = drawable.texture.height
-        let wantUpscale = upscalingEnabled && (dstW > w || dstH > h)
+        // MetalFX spatial only upscales: require both axes >= source, at least one strictly
+        // larger. A mixed resize (one axis smaller) is not valid for the scaler.
+        let wantUpscale = upscalingEnabled && dstW >= w && dstH >= h && (dstW > w || dstH > h)
 
         if wantUpscale,
            ensureUpscaler(srcW: w, srcH: h, dstW: dstW, dstH: dstH, hdr: isFrameHDR),
@@ -1035,6 +1044,9 @@ class MetalVideoRenderer {
             // Pass 2: MetalFX upscales into a private texture (its output can't be the drawable).
             scaler.colorTexture  = inter
             scaler.outputTexture = upscaled
+            // Per-frame: the content region of the intermediate the scaler should read.
+            scaler.inputContentWidth  = w
+            scaler.inputContentHeight = h
             scaler.encode(commandBuffer: commandBuffer)
 
             // Pass 3: blit the upscaled result into the drawable.

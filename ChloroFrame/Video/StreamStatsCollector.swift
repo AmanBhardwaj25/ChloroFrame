@@ -26,6 +26,9 @@ struct StreamStats {
     var reconOutW: Int = 0             // upscaled output width
     var reconOutH: Int = 0             // upscaled output height
     var reconReason: String = ""       // why it fell back (when requested but not active)
+    var fgRequested: Bool = false      // frame generation requested
+    var fgActive: Bool = false         // frame generation running
+    var fgReason: String = ""          // why frame gen fell back
 
     // What actually arrived
     var measFps: Double = 0
@@ -95,6 +98,9 @@ final class StreamStatsCollector {
     private(set) var reconOutW = 0
     private(set) var reconOutH = 0
     private(set) var reconReason = ""
+    private(set) var fgRequested = false
+    private(set) var fgActive = false
+    private(set) var fgReason = ""
 
     /// Record the local upscaling state for the stats HUD. `requested` is true when the user
     /// enabled it and the stream qualified; `active` is true only if the scaler session was
@@ -106,6 +112,15 @@ final class StreamStatsCollector {
             self?.reconOutW      = outW
             self?.reconOutH      = outH
             self?.reconReason    = reason
+        }
+    }
+
+    /// Record the frame-generation state for the stats HUD.
+    func setFrameGen(requested: Bool, active: Bool, reason: String) {
+        DispatchQueue.main.async { [weak self] in
+            self?.fgRequested = requested
+            self?.fgActive    = active
+            self?.fgReason    = reason
         }
     }
 
@@ -380,6 +395,9 @@ final class StreamStatsCollector {
             reconOutW: reconOutW,
             reconOutH: reconOutH,
             reconReason: reconReason,
+            fgRequested: fgRequested,
+            fgActive: fgActive,
+            fgReason: fgReason,
             measFps: fps,
             measBitrateMbps: bitrateMbps,
             recvCodec: receivedCodec,

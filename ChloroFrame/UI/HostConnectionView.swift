@@ -6,6 +6,7 @@
 //
 
 import SwiftUI
+import CoreVideo
 
 // MARK: - Connection flow state machine
 // StreamError lives in StreamState.swift so ContentView can reference it too.
@@ -35,6 +36,7 @@ struct HostConnectionView: View {
     @AppStorage("streamOverrideFPS")         private var overrideFPS         = 0
     @AppStorage("streamOverrideBitrate")     private var overrideBitrate     = 0    // kbps
     @AppStorage("localUpscaling")            private var localUpscaling      = false
+    @AppStorage("frameGeneration")           private var frameGeneration     = false
 
     @State private var client: SunshineHTTPClient
     @State private var phase: FlowPhase = .connecting
@@ -173,7 +175,8 @@ struct HostConnectionView: View {
                         overrideResolution: $overrideResolution,
                         overrideFPS:        $overrideFPS,
                         overrideBitrate:    $overrideBitrate,
-                        localUpscaling:     $localUpscaling
+                        localUpscaling:     $localUpscaling,
+                        frameGeneration:    $frameGeneration
                     )
                 }
 
@@ -379,8 +382,36 @@ struct HostConnectionView: View {
             r.upscalingEnabled = localUpscaling
             t.stats.setReconstruction(requested: localUpscaling, active: false,
                                       outW: 0, outH: 0, reason: localUpscaling ? "starting" : "")
-            t.onVideoTexture = { pixelBuffer, pts in r.enqueueFrame(pixelBuffer, pts: pts) }
-            t.onClockReset = { r.resetClockAnchor() }
+
+            // Optional temporal frame generation at the decode->enqueue seam. Synthesizes a
+            // midpoint frame between each decoded pair (2x), doubling the rate fed to the
+            // renderer. Adds ~one source-frame interval of latency. Falls back to the direct
+            // path (reason reported to the HUD) when unsupported. The interpolator is captured
+            // by the closures, so it lives for the stream.
+            var interpolator: FrameInterpolator? = nil
+            if frameGeneration {
+                let srcFormat: OSType = enableHdr
+                    ? kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange
+                    : kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
+                do {
+                    interpolator = try FrameInterpolator(width: config.width, height: config.height,
+                                                         sourcePixelFormat: srcFormat)
+                    t.stats.setFrameGen(requested: true, active: true, reason: "")
+                } catch {
+                    t.stats.setFrameGen(requested: true, active: false, reason: error.localizedDescription)
+                }
+            } else {
+                t.stats.setFrameGen(requested: false, active: false, reason: "")
+            }
+
+            if let interp = interpolator {
+                interp.onFrame = { pixelBuffer, pts in r.enqueueFrame(pixelBuffer, pts: pts) }
+                t.onVideoTexture = { pixelBuffer, pts in interp.submit(pixelBuffer, pts: pts) }
+                t.onClockReset = { interp.reset(); r.resetClockAnchor() }
+            } else {
+                t.onVideoTexture = { pixelBuffer, pts in r.enqueueFrame(pixelBuffer, pts: pts) }
+                t.onClockReset = { r.resetClockAnchor() }
+            }
             t.onENetDisconnect = {
                 Task { @MainActor in
                     streamState.didDisconnect(error: StreamError.controlDisconnected)
@@ -436,6 +467,7 @@ private struct StreamSettingsPopover: View {
     @Binding var overrideFPS: Int
     @Binding var overrideBitrate: Int
     @Binding var localUpscaling: Bool
+    @Binding var frameGeneration: Bool
 
     // Fetched on appear — owned by the popover so there's no parent-to-child timing race.
     @State private var availableModes: [DisplayResolution] = []
@@ -523,7 +555,9 @@ private struct StreamSettingsPopover: View {
 
                 Section("Reconstruction (experimental)") {
                     Toggle("Local Upscaling", isOn: $localUpscaling)
-                        .help("When the resolution above is below your display's native resolution, reconstruct up to native using the Mac's super-resolution scaler. Requires macOS 26 on Apple Silicon. SDR only; ignored for HDR streams.")
+                        .help("Upscale the decoded frame to your display's native resolution using MetalFX spatial scaling. Sharper than the default stretch. Works at native resolution and with HDR; no added latency. Requires macOS 26 on Apple Silicon.")
+                    Toggle("Frame Generation", isOn: $frameGeneration)
+                        .help("Synthesize an intermediate frame between each decoded pair (2x) to smooth a low frame rate. Adds about one source-frame interval of latency. SDR only: the interpolation API does not accept HDR (P010) input. Best when the stream is a steady moderate fps. Requires macOS 26 on Apple Silicon.")
                 }
 
                 Section {

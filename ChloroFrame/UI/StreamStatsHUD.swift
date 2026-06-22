@@ -66,6 +66,11 @@ struct StreamStatsHUD: View {
             } else if s.reconRequested {
                 row("Upscaling", s.reconReason.isEmpty ? "fell back" : "fell back · \(s.reconReason)")
             }
+            if s.fgActive {
+                row("Frame Gen", "2× interpolation")
+            } else if s.fgRequested {
+                row("Frame Gen", s.fgReason.isEmpty ? "fell back" : "fell back · \(s.fgReason)")
+            }
             row("Target",     "\(s.reqFps) fps  ·  \(s.reqBitrateKbps / 1000) Mbps")
             row("Codec",      s.reqCodec.displayName)
             row("HDR",        s.reqHdr ? "requested" : "not requested")
