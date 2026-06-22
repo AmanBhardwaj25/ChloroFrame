@@ -658,6 +658,8 @@
 					"$(PROJECT_DIR)/ChloroFrame/Network/FEC",
 					"$(PROJECT_DIR)/ChloroFrame/Vendor/opus/include",
 				);
+				INFOPLIST_KEY_CFBundleDisplayName = ChloroFrame;
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.games";
 				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "ChloroFrame connects to your game streaming host over the local network.";
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				INFOPLIST_KEY_UIUserInterfaceStyle = Automatic;
@@ -695,6 +697,8 @@
 					"$(PROJECT_DIR)/ChloroFrame/Network/FEC",
 					"$(PROJECT_DIR)/ChloroFrame/Vendor/opus/include",
 				);
+				INFOPLIST_KEY_CFBundleDisplayName = ChloroFrame;
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.games";
 				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "ChloroFrame connects to your game streaming host over the local network.";
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				INFOPLIST_KEY_UIUserInterfaceStyle = Automatic;

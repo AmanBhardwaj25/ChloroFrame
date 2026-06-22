@@ -19,6 +19,7 @@ import SwiftUI
 struct TVContentView: View {
     @State private var hosts = HostManager()
     @State private var showAddHost = false
+    @State private var showSettings = false
     @State private var path: [Host] = []
     @FocusState private var focus: FocusTarget?
 
@@ -61,6 +62,9 @@ struct TVContentView: View {
                     DispatchQueue.main.async { focus = .host(newID) }
                 }
             }
+        }
+        .sheet(isPresented: $showSettings) {
+            TVSettingsView()
         }
     }
 
@@ -111,6 +115,13 @@ struct TVContentView: View {
             }
             .buttonStyle(.card)
             .focused($focus, equals: .addHost)
+
+            Button {
+                showSettings = true
+            } label: {
+                TVSettingsTile()
+            }
+            .buttonStyle(.card)
         }
         .defaultFocus($focus, hosts.hosts.first.map { .host($0.id) } ?? .addHost)
     }
@@ -156,6 +167,22 @@ private struct TVAddHostTile: View {
                 .font(.system(size: 44, weight: .light))
                 .foregroundStyle(TVTheme.gold)
             Text("Add Host")
+                .font(.title3)
+                .fontWeight(.semibold)
+                .foregroundStyle(.white)
+        }
+        .frame(maxWidth: .infinity, minHeight: 200)
+        .background(TVTheme.surface.opacity(0.5), in: RoundedRectangle(cornerRadius: 18))
+    }
+}
+
+private struct TVSettingsTile: View {
+    var body: some View {
+        VStack(spacing: 12) {
+            Image(systemName: "gearshape.fill")
+                .font(.system(size: 44, weight: .light))
+                .foregroundStyle(TVTheme.gold)
+            Text("Settings")
                 .font(.title3)
                 .fontWeight(.semibold)
                 .foregroundStyle(.white)

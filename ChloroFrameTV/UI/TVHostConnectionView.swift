@@ -21,8 +21,12 @@ struct TVHostConnectionView: View {
     @State private var client: SunshineHTTPClient
     @State private var phase: Phase = .connecting
 
-    // tvOS MVP defaults: 1080p60 H.264 SDR (port plan first-correctness target).
-    private let codec: VideoCodec = .h264
+    // Stream settings (set in TVSettingsView). Codec is derived from HDR: HDR requires HEVC,
+    // otherwise H.264.
+    @AppStorage(TVStreamSettings.resolutionKey) private var resolution = TVStreamSettings.defaultResolution
+    @AppStorage(TVStreamSettings.fpsKey)        private var fps        = TVStreamSettings.defaultFps
+    @AppStorage(TVStreamSettings.bitrateKey)    private var bitrate    = TVStreamSettings.defaultBitrate
+    @AppStorage(TVStreamSettings.hdrKey)        private var hdr        = false
 
     enum Phase {
         case connecting
@@ -165,18 +169,17 @@ struct TVHostConnectionView: View {
     }
 
     private func streamingView(app: SunshineApp, transport: StreamTransport, renderer: MetalVideoRenderer, controller: TVControllerTranslator, fps: Int) -> some View {
-        TVMetalVideoView(renderer: renderer, streamFps: fps)
+        // TVStreamSurface disables focus interaction so the controller drives the host (not the
+        // tvOS UI) and captures the Menu button as the exit. Teardown runs in onDisappear so it
+        // fires on any pop, freeing the video socket for the next connect (the reconnect bug).
+        TVStreamSurface(renderer: renderer, streamFps: fps, onExit: { dismiss() })
             .ignoresSafeArea()
-            // Menu/Back on the remote stops the session: release the pad, tear down the
-            // transport, cancel the app on the host, and pop back to the host list.
-            .onExitCommand {
+            .onDisappear {
                 controller.releaseAll()
                 controller.stop()
                 transport.stop()
-                Task {
-                    await client.cancelApp(id: app.id)
-                    dismiss()
-                }
+                let appID = app.id
+                Task { await client.cancelApp(id: appID) }
             }
     }
 
@@ -228,9 +231,11 @@ struct TVHostConnectionView: View {
 
     private func launch(app: SunshineApp) async {
         phase = .launching(app)
-        let display = DisplayConfig.detect()   // tvOS 1080p60 SDR preset
+        let (w, h) = Self.parseResolution(resolution)
+        // bitrate 0 -> DisplayConfig auto-computes from resolution/fps.
+        let display = DisplayConfig(width: w, height: h, fps: fps, hdr: hdr, bitrateOverride: bitrate)
         do {
-            let result = try await client.launchApp(id: app.id, display: display, hdrMode: false)
+            let result = try await client.launchApp(id: app.id, display: display, hdrMode: hdr)
             phase = .negotiating(app)
             await negotiate(app: app, result: result, display: display)
         } catch {
@@ -243,13 +248,15 @@ struct TVHostConnectionView: View {
             phase = .failed("Invalid RTSP session URL")
             return
         }
+        // HDR requires HEVC; otherwise H.264 (broadly decodable).
+        let codec: VideoCodec = hdr ? .hevc : .h264
         let config = StreamConfig(
             width:   display.width,
             height:  display.height,
             fps:     display.fps,
             bitrate: display.bitrate,
             codec:   codec,
-            hdr:     false
+            hdr:     hdr
         )
         do {
             let stream = try await RTSPClient().negotiate(sessionURL: sessionURL, config: config)
@@ -275,6 +282,15 @@ struct TVHostConnectionView: View {
             await client.cancelApp(id: app.id)
             phase = .failed(error.localizedDescription)
         }
+    }
+
+    /// Parse a "WxH" resolution string into even dimensions (H.264/HEVC require even).
+    private static func parseResolution(_ s: String) -> (Int, Int) {
+        let parts = s.split(separator: "x")
+        if parts.count == 2, let w = Int(parts[0]), let h = Int(parts[1]) {
+            return (w & ~1, h & ~1)
+        }
+        return (1920, 1080)
     }
 }
 
