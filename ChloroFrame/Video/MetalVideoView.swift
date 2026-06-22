@@ -8,6 +8,7 @@
 import SwiftUI
 import AppKit
 import Metal
+import MetalFX
 import CoreMedia
 import CoreVideo
 import QuartzCore
@@ -554,6 +555,19 @@ class MetalVideoRenderer {
     // extended-range values. A single format lets both PSOs share the same drawable/layer.
     var drawablePixelFormat: MTLPixelFormat { .rgba16Float }
 
+    // MetalFX spatial upscaling. When enabled and the drawable is larger than the decoded
+    // frame, YUV->RGB is rendered into an intermediate at the source size, then MTLFXSpatialScaler
+    // upscales it into the drawable (replacing the bilinear stretch). Render-thread-only state.
+    var upscalingEnabled = false
+    private var spatialScaler: MTLFXSpatialScaler?
+    private var intermediateTexture: MTLTexture?   // source-size YUV->RGB target
+    private var upscaledTexture: MTLTexture?        // drawable-size MetalFX output (must be .private)
+    private var scalerInputW = 0, scalerInputH = 0
+    private var scalerOutputW = 0, scalerOutputH = 0
+    private var scalerIsHDR = false
+    // Last reconstruction state reported to stats; gates redundant reports.
+    private var reconReported: (active: Bool, w: Int, h: Int)? = nil
+
     init?(isHdr: Bool = false) {
         guard let device = MTLCreateSystemDefaultDevice(),
               let commandQueue = device.makeCommandQueue() else { return nil }
@@ -595,12 +609,76 @@ class MetalVideoRenderer {
 
     func attach(layer: CAMetalLayer) {
         metalLayer = layer
+        // MetalFX writes the drawable from a compute pass, which a framebufferOnly drawable
+        // cannot serve. Relax it when upscaling is on (negligible cost for our use).
+        if upscalingEnabled { layer.framebufferOnly = false }
         // Use confirmed metadata if we have it (SwiftUI may call attach again via updateNSView
         // after the first frame is decoded — don't let that reset lastDetectedHDR back to the
         // negotiated guess). Fall back to isHdr only before any frame has been seen.
         let effectiveHDR = lastDetectedHDR ?? isHdr
         layer.wantsExtendedDynamicRangeContent = effectiveHDR
         layer.colorspace = effectiveHDR ? CGColorSpace(name: CGColorSpace.extendedLinearITUR_2020) : nil
+    }
+
+    /// (Re)builds the MetalFX spatial scaler and the source-size intermediate texture when the
+    /// source/drawable dimensions or HDR-ness change. Returns false (caller renders directly,
+    /// bilinear) when MetalFX is unavailable on this device. Render-thread only.
+    private func ensureUpscaler(srcW: Int, srcH: Int, dstW: Int, dstH: Int, hdr: Bool) -> Bool {
+        if spatialScaler != nil, intermediateTexture != nil,
+           scalerInputW == srcW, scalerInputH == srcH,
+           scalerOutputW == dstW, scalerOutputH == dstH, scalerIsHDR == hdr {
+            return true
+        }
+
+        guard MTLFXSpatialScalerDescriptor.supportsDevice(device) else {
+            spatialScaler = nil; intermediateTexture = nil
+            return false
+        }
+
+        let desc = MTLFXSpatialScalerDescriptor()
+        desc.inputWidth = srcW
+        desc.inputHeight = srcH
+        desc.outputWidth = dstW
+        desc.outputHeight = dstH
+        desc.colorTextureFormat  = .rgba16Float
+        desc.outputTextureFormat = .rgba16Float
+        // SDR shader output is gamma-encoded [0,1]; HDR shader output is linear extended-range.
+        desc.colorProcessingMode = hdr ? .hdr : .perceptual
+
+        let inDesc = MTLTextureDescriptor.texture2DDescriptor(
+            pixelFormat: .rgba16Float, width: srcW, height: srcH, mipmapped: false)
+        inDesc.usage = [.renderTarget, .shaderRead]
+        inDesc.storageMode = .private
+
+        // MetalFX requires its output texture to be .private storage (a CAMetalLayer drawable
+        // is not), so it scales into this private texture and we blit it to the drawable.
+        let outDesc = MTLTextureDescriptor.texture2DDescriptor(
+            pixelFormat: .rgba16Float, width: dstW, height: dstH, mipmapped: false)
+        outDesc.usage = [.shaderRead, .shaderWrite, .renderTarget]
+        outDesc.storageMode = .private
+
+        guard let scaler = desc.makeSpatialScaler(device: device),
+              let inter = device.makeTexture(descriptor: inDesc),
+              let out = device.makeTexture(descriptor: outDesc) else {
+            spatialScaler = nil; intermediateTexture = nil; upscaledTexture = nil
+            return false
+        }
+
+        spatialScaler = scaler
+        intermediateTexture = inter
+        upscaledTexture = out
+        scalerInputW = srcW; scalerInputH = srcH
+        scalerOutputW = dstW; scalerOutputH = dstH
+        scalerIsHDR = hdr
+        StreamLog.log("[ChloroFrame][video] MetalFX spatial \(srcW)x\(srcH) -> \(dstW)x\(dstH) hdr=\(hdr)")
+        return true
+    }
+
+    /// Reports upscaling state to the stats HUD, once per state change.
+    private func reportRecon(active: Bool, w: Int, h: Int, reason: String = "") {
+        if let r = reconReported, r.active == active, r.w == w, r.h == h { return }
+        reconReported = (active, w, h)
+        stats?.setReconstruction(requested: true, active: active, outW: w, outH: h, reason: reason)
     }
 
     func setStreamFps(_ fps: Int) {
@@ -931,18 +1009,63 @@ class MetalVideoRenderer {
             return
         }
 
-        let rpd = MTLRenderPassDescriptor()
-        rpd.colorAttachments[0].texture     = drawable.texture
-        rpd.colorAttachments[0].loadAction  = .clear
-        rpd.colorAttachments[0].clearColor  = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 1)
-        rpd.colorAttachments[0].storeAction = .store
+        // MetalFX path: render YUV->RGB into the source-size intermediate, then upscale into
+        // the drawable. Used only when enabled and the drawable is genuinely larger than the
+        // decoded frame; otherwise (and when MetalFX is unavailable) render straight to the
+        // drawable, which the compositor scales bilinearly as before.
+        let dstW = drawable.texture.width, dstH = drawable.texture.height
+        let wantUpscale = upscalingEnabled && (dstW > w || dstH > h)
 
-        guard let enc = commandBuffer.makeRenderCommandEncoder(descriptor: rpd) else { return }
-        enc.setRenderPipelineState(isFrameHDR ? pipelineStateHDR : pipelineStateSDR)
-        enc.setFragmentTexture(yTex,  index: 0)
-        enc.setFragmentTexture(uvTex, index: 1)
-        enc.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
-        enc.endEncoding()
+        if wantUpscale,
+           ensureUpscaler(srcW: w, srcH: h, dstW: dstW, dstH: dstH, hdr: isFrameHDR),
+           let scaler = spatialScaler, let inter = intermediateTexture, let upscaled = upscaledTexture {
+            // Pass 1: YUV -> RGB into the source-size intermediate.
+            let rpd = MTLRenderPassDescriptor()
+            rpd.colorAttachments[0].texture     = inter
+            rpd.colorAttachments[0].loadAction  = .clear
+            rpd.colorAttachments[0].clearColor  = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 1)
+            rpd.colorAttachments[0].storeAction = .store
+            guard let enc = commandBuffer.makeRenderCommandEncoder(descriptor: rpd) else { return }
+            enc.setRenderPipelineState(isFrameHDR ? pipelineStateHDR : pipelineStateSDR)
+            enc.setFragmentTexture(yTex,  index: 0)
+            enc.setFragmentTexture(uvTex, index: 1)
+            enc.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
+            enc.endEncoding()
+
+            // Pass 2: MetalFX upscales into a private texture (its output can't be the drawable).
+            scaler.colorTexture  = inter
+            scaler.outputTexture = upscaled
+            scaler.encode(commandBuffer: commandBuffer)
+
+            // Pass 3: blit the upscaled result into the drawable.
+            if let blit = commandBuffer.makeBlitCommandEncoder() {
+                blit.copy(from: upscaled, sourceSlice: 0, sourceLevel: 0,
+                          sourceOrigin: MTLOrigin(x: 0, y: 0, z: 0),
+                          sourceSize: MTLSize(width: dstW, height: dstH, depth: 1),
+                          to: drawable.texture, destinationSlice: 0, destinationLevel: 0,
+                          destinationOrigin: MTLOrigin(x: 0, y: 0, z: 0))
+                blit.endEncoding()
+            }
+            reportRecon(active: true, w: dstW, h: dstH)
+        } else {
+            let rpd = MTLRenderPassDescriptor()
+            rpd.colorAttachments[0].texture     = drawable.texture
+            rpd.colorAttachments[0].loadAction  = .clear
+            rpd.colorAttachments[0].clearColor  = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 1)
+            rpd.colorAttachments[0].storeAction = .store
+
+            guard let enc = commandBuffer.makeRenderCommandEncoder(descriptor: rpd) else { return }
+            enc.setRenderPipelineState(isFrameHDR ? pipelineStateHDR : pipelineStateSDR)
+            enc.setFragmentTexture(yTex,  index: 0)
+            enc.setFragmentTexture(uvTex, index: 1)
+            enc.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
+            enc.endEncoding()
+
+            if upscalingEnabled {
+                reportRecon(active: false, w: 0, h: 0,
+                            reason: wantUpscale ? "MetalFX unavailable" : "at source size")
+            }
+        }
 
         commandBuffer.addCompletedHandler { _ in _ = yRef; _ = uvRef }
         commandBuffer.present(drawable)

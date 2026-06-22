@@ -34,6 +34,7 @@ struct HostConnectionView: View {
     @AppStorage("streamOverrideResolution")  private var overrideResolution  = ""   // "WxH" or ""
     @AppStorage("streamOverrideFPS")         private var overrideFPS         = 0
     @AppStorage("streamOverrideBitrate")     private var overrideBitrate     = 0    // kbps
+    @AppStorage("localUpscaling")            private var localUpscaling      = false
 
     @State private var client: SunshineHTTPClient
     @State private var phase: FlowPhase = .connecting
@@ -171,7 +172,8 @@ struct HostConnectionView: View {
                     StreamSettingsPopover(
                         overrideResolution: $overrideResolution,
                         overrideFPS:        $overrideFPS,
-                        overrideBitrate:    $overrideBitrate
+                        overrideBitrate:    $overrideBitrate,
+                        localUpscaling:     $localUpscaling
                     )
                 }
 
@@ -368,6 +370,15 @@ struct HostConnectionView: View {
             let ct = ControllerTranslator(transport: t)
             r.stats = t.stats
             r.setStreamFps(config.fps)
+
+            // Local spatial upscaling via MetalFX, inside the renderer: when enabled and the
+            // drawable is larger than the decoded frame (always on Retina), the renderer
+            // upscales source->drawable, replacing the bilinear stretch. Works at native
+            // resolution and with HDR, no added latency. The renderer reports active state and
+            // output size to the stats HUD once it sees the first frame.
+            r.upscalingEnabled = localUpscaling
+            t.stats.setReconstruction(requested: localUpscaling, active: false,
+                                      outW: 0, outH: 0, reason: localUpscaling ? "starting" : "")
             t.onVideoTexture = { pixelBuffer, pts in r.enqueueFrame(pixelBuffer, pts: pts) }
             t.onClockReset = { r.resetClockAnchor() }
             t.onENetDisconnect = {
@@ -404,7 +415,9 @@ struct HostConnectionView: View {
 
     // Merge auto-detected display config with any user overrides from AppStorage.
     private func buildDisplayConfig(base: DisplayConfig) -> DisplayConfig {
-        let parts = overrideResolution.split(separator: "x")
+        // Tolerant of custom entry: "1280x720", "1280 X 720", etc. all parse.
+        let normalized = overrideResolution.lowercased().replacingOccurrences(of: " ", with: "")
+        let parts = normalized.split(separator: "x")
         let w = parts.count == 2 ? (Int(parts[0]).map { $0 & ~1 } ?? 0) : 0
         let h = parts.count == 2 ? (Int(parts[1]).map { $0 & ~1 } ?? 0) : 0
 
@@ -422,12 +435,29 @@ private struct StreamSettingsPopover: View {
     @Binding var overrideResolution: String
     @Binding var overrideFPS: Int
     @Binding var overrideBitrate: Int
+    @Binding var localUpscaling: Bool
 
     // Fetched on appear — owned by the popover so there's no parent-to-child timing race.
     @State private var availableModes: [DisplayResolution] = []
+    // Local text for the custom-resolution field; committed to overrideResolution on submit.
+    @State private var customResolution: String = ""
 
     private var selectedMode: DisplayResolution? {
         availableModes.first { $0.id == overrideResolution }
+    }
+
+    // Parse the typed "WxH" (tolerant of case/spaces) and commit it as the override.
+    // An empty field reverts to Auto / the picker.
+    private func applyCustomResolution() {
+        let normalized = customResolution.lowercased().replacingOccurrences(of: " ", with: "")
+        if normalized.isEmpty {
+            overrideResolution = ""
+            return
+        }
+        let parts = normalized.split(separator: "x")
+        guard parts.count == 2, let w = Int(parts[0]), let h = Int(parts[1]), w > 0, h > 0 else { return }
+        overrideResolution = "\(w)x\(h)"
+        customResolution = overrideResolution
     }
 
     private var availableFPS: [Int] {
@@ -453,12 +483,23 @@ private struct StreamSettingsPopover: View {
                         ForEach(availableModes) { mode in
                             Text(mode.label).tag(mode.id)
                         }
+                        // Reflect a typed custom value that isn't one of the display's modes,
+                        // so the picker shows the active selection instead of looking empty.
+                        if !overrideResolution.isEmpty && selectedMode == nil {
+                            Divider()
+                            Text("Custom (\(overrideResolution))").tag(overrideResolution)
+                        }
                     }
                     .onChange(of: overrideResolution) { _, _ in
                         // Clear FPS override when resolution changes —
                         // the previous fps value may not exist in the new mode.
                         overrideFPS = 0
                     }
+
+                    TextField("Custom (e.g. 1280x720)", text: $customResolution)
+                        .textFieldStyle(.roundedBorder)
+                        .onSubmit { applyCustomResolution() }
+                        .help("Stream at a custom resolution, even one your display doesn't list. Press Return to apply; it overrides the picker above. Useful for testing upscaling.")
 
                     Picker("Frame Rate", selection: $overrideFPS) {
                         Text("Auto").tag(0)
@@ -480,11 +521,17 @@ private struct StreamSettingsPopover: View {
                     }
                 }
 
+                Section("Reconstruction (experimental)") {
+                    Toggle("Local Upscaling", isOn: $localUpscaling)
+                        .help("When the resolution above is below your display's native resolution, reconstruct up to native using the Mac's super-resolution scaler. Requires macOS 26 on Apple Silicon. SDR only; ignored for HDR streams.")
+                }
+
                 Section {
                     Button("Reset to Auto") {
                         overrideResolution = ""
                         overrideFPS        = 0
                         overrideBitrate    = 0
+                        customResolution   = ""
                     }
                     .foregroundStyle(.red)
                 }
@@ -496,6 +543,8 @@ private struct StreamSettingsPopover: View {
         .task {
             // Fetch display modes on appear so timing doesn't depend on the parent.
             availableModes = DisplayConfig.availableResolutions()
+            // Seed the custom field with any value not matching a listed mode.
+            if selectedMode == nil { customResolution = overrideResolution }
         }
     }
 }

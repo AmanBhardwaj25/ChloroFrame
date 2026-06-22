@@ -20,6 +20,13 @@ struct StreamStats {
     var reqCodec: VideoCodec = .h264
     var reqHdr: Bool = false
 
+    // Local reconstruction (super-resolution upscaling)
+    var reconRequested: Bool = false   // user enabled it and the stream qualifies (sub-native, SDR)
+    var reconActive: Bool = false      // scaler session actually created
+    var reconOutW: Int = 0             // upscaled output width
+    var reconOutH: Int = 0             // upscaled output height
+    var reconReason: String = ""       // why it fell back (when requested but not active)
+
     // What actually arrived
     var measFps: Double = 0
     var measBitrateMbps: Double = 0
@@ -81,6 +88,26 @@ final class StreamStatsCollector {
     var requestedBitrateKbps: Int = 0
     var requestedCodec: VideoCodec = .h264
     var requestedHdr: Bool = false
+
+    // Local reconstruction state — set once at stream setup, read on the snapshot tick.
+    private(set) var reconRequested = false
+    private(set) var reconActive = false
+    private(set) var reconOutW = 0
+    private(set) var reconOutH = 0
+    private(set) var reconReason = ""
+
+    /// Record the local upscaling state for the stats HUD. `requested` is true when the user
+    /// enabled it and the stream qualified; `active` is true only if the scaler session was
+    /// created (false means it fell back to the direct path, with `reason` explaining why).
+    func setReconstruction(requested: Bool, active: Bool, outW: Int, outH: Int, reason: String) {
+        DispatchQueue.main.async { [weak self] in
+            self?.reconRequested = requested
+            self?.reconActive    = active
+            self?.reconOutW      = outW
+            self?.reconOutH      = outH
+            self?.reconReason    = reason
+        }
+    }
 
     // Received — set once when the first frame is successfully decoded
     private(set) var receivedCodec: VideoCodec? = nil
@@ -348,6 +375,11 @@ final class StreamStatsCollector {
             reqBitrateKbps: requestedBitrateKbps,
             reqCodec: requestedCodec,
             reqHdr: requestedHdr,
+            reconRequested: reconRequested,
+            reconActive: reconActive,
+            reconOutW: reconOutW,
+            reconOutH: reconOutH,
+            reconReason: reconReason,
             measFps: fps,
             measBitrateMbps: bitrateMbps,
             recvCodec: receivedCodec,

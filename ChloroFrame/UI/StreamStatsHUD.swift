@@ -61,6 +61,11 @@ struct StreamStatsHUD: View {
         VStack(alignment: .leading, spacing: 3) {
             label("REQUESTED")
             row("Resolution", "\(s.reqWidth) × \(s.reqHeight)")
+            if s.reconActive {
+                row("Upscaling", "→ \(s.reconOutW) × \(s.reconOutH)  MetalFX")
+            } else if s.reconRequested {
+                row("Upscaling", s.reconReason.isEmpty ? "fell back" : "fell back · \(s.reconReason)")
+            }
             row("Target",     "\(s.reqFps) fps  ·  \(s.reqBitrateKbps / 1000) Mbps")
             row("Codec",      s.reqCodec.displayName)
             row("HDR",        s.reqHdr ? "requested" : "not requested")
