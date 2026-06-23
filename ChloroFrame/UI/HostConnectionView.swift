@@ -426,27 +426,26 @@ struct HostConnectionView: View {
                 }
 
             case "flow":
-                if !enableHdr {
-                    t.stats.setFrameGen(requested: true, active: false, reason: "HDR streams only")
+                let mult: Int
+                if frameGenFlowMode == "target" {
+                    let target = max(config.fps + 1, min(frameGenTargetFps, displayMax))
+                    mult = max(2, min(4, Int((Double(target) / Double(config.fps)).rounded())))
                 } else {
-                    let mult: Int
-                    if frameGenFlowMode == "target" {
-                        let target = max(config.fps + 1, min(frameGenTargetFps, displayMax))
-                        mult = max(2, min(4, Int((Double(target) / Double(config.fps)).rounded())))
-                    } else {
-                        mult = frameGenMult >= 4 ? 4 : 2
-                    }
-                    do {
-                        let gen = try HDRFrameGenerator(width: config.width, height: config.height,
-                                                        interpolatedFrames: mult - 1)
-                        gen.onFrame = { pixelBuffer, pts in r.enqueueFrame(pixelBuffer, pts: pts) }
-                        fgSubmit = { pixelBuffer, pts in gen.submit(pixelBuffer, pts: pts) }
-                        fgReset  = { gen.reset() }
-                        fgPresentFps = min(config.fps * mult, displayMax)
-                        t.stats.setFrameGen(requested: true, active: true, reason: "flow \(mult)×")
-                    } catch {
-                        t.stats.setFrameGen(requested: true, active: false, reason: error.localizedDescription)
-                    }
+                    mult = frameGenMult >= 4 ? 4 : 2
+                }
+                let flowFormat: OSType = enableHdr
+                    ? kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange
+                    : kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
+                do {
+                    let gen = try HDRFrameGenerator(width: config.width, height: config.height,
+                                                    interpolatedFrames: mult - 1, sourcePixelFormat: flowFormat)
+                    gen.onFrame = { pixelBuffer, pts in r.enqueueFrame(pixelBuffer, pts: pts) }
+                    fgSubmit = { pixelBuffer, pts in gen.submit(pixelBuffer, pts: pts) }
+                    fgReset  = { gen.reset() }
+                    fgPresentFps = min(config.fps * mult, displayMax)
+                    t.stats.setFrameGen(requested: true, active: true, reason: "flow \(mult)×")
+                } catch {
+                    t.stats.setFrameGen(requested: true, active: false, reason: error.localizedDescription)
                 }
 
             default:   // "off"
@@ -662,7 +661,7 @@ private struct StreamSettingsPopover: View {
                     Picker("Mode", selection: $frameGenMode) {
                         Text("Off").tag("off")
                         Text("VT LowLatency (SDR)").tag("vt")
-                        Text("Optical Flow (HDR)").tag("flow")
+                        Text("Optical Flow (HDR/SDR)").tag("flow")
                     }
                     if frameGenMode == "vt" {
                         Picker("Multiplier", selection: $frameGenMult) {

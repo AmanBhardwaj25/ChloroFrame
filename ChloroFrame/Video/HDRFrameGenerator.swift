@@ -41,6 +41,9 @@ final class HDRFrameGenerator {
     private var proxyPool: CVPixelBufferPool?       // small single-channel luma proxies
     private let proxyW: Int
     private let proxyH: Int
+    // Plane texture formats for the source pixel format: 16-bit for P010 (HDR), 8-bit for NV12 (SDR).
+    private let yFmt: MTLPixelFormat
+    private let uvFmt: MTLPixelFormat
     private let queue = DispatchQueue(label: "chloroframe.hdr-framegen", qos: .userInteractive)
 
     private var prevBuffer: CVPixelBuffer?
@@ -56,11 +59,16 @@ final class HDRFrameGenerator {
     // [1/3,2/3], 4x: [0.25,0.5,0.75]).
     private let phaseValues: [Double]
 
-    /// - Parameter interpolatedFrames: number of frames to synthesize between each real pair
-    ///   (1 = 2x, 2 = 3x, 3 = 4x).
-    init(width: Int, height: Int, interpolatedFrames: Int) throws {
+    /// - Parameters:
+    ///   - interpolatedFrames: frames to synthesize between each real pair (1 = 2x, 2 = 3x, 3 = 4x).
+    ///   - sourcePixelFormat: P010 (HDR) or NV12 (SDR). Selects 16-bit vs 8-bit plane textures.
+    init(width: Int, height: Int, interpolatedFrames: Int, sourcePixelFormat: OSType) throws {
         let n = max(1, min(3, interpolatedFrames))
         self.phaseValues = (1...n).map { Double($0) / Double(n + 1) }
+
+        let isP010 = sourcePixelFormat == kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange
+        self.yFmt  = isP010 ? .r16Unorm  : .r8Unorm
+        self.uvFmt = isP010 ? .rg16Unorm : .rg8Unorm
 
         // Optical flow runs on a ~1/4-scale luma proxy so Vision is fast enough for real time;
         // the warp normalizes flow by its own dimensions, so a coarse flow field is still valid.
@@ -84,8 +92,8 @@ final class HDRFrameGenerator {
             d.colorAttachments[0].pixelFormat = format
             return try device.makeRenderPipelineState(descriptor: d)
         }
-        self.warpYPSO  = try pso("fragmentWarpBlendY",  .r16Unorm)
-        self.warpUVPSO = try pso("fragmentWarpBlendUV", .rg16Unorm)
+        self.warpYPSO  = try pso("fragmentWarpBlendY",  yFmt)
+        self.warpUVPSO = try pso("fragmentWarpBlendUV", uvFmt)
         self.proxyPSO  = try pso("fragmentShader",      .r8Unorm)   // samples Y, writes downscaled luma
 
         var cache: CVMetalTextureCache?
@@ -96,7 +104,7 @@ final class HDRFrameGenerator {
         self.textureCache = cache
 
         let attrs: [String: Any] = [
-            kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange,
+            kCVPixelBufferPixelFormatTypeKey as String: sourcePixelFormat,
             kCVPixelBufferWidthKey as String: width,
             kCVPixelBufferHeightKey as String: height,
             kCVPixelBufferMetalCompatibilityKey as String: true,
@@ -106,7 +114,7 @@ final class HDRFrameGenerator {
         var pool: CVPixelBufferPool?
         guard CVPixelBufferPoolCreate(kCFAllocatorDefault, poolAttrs as CFDictionary,
                                       attrs as CFDictionary, &pool) == kCVReturnSuccess, let pool else {
-            throw InterpolatorError.message("P010 pool alloc failed")
+            throw InterpolatorError.message("output pool alloc failed")
         }
         self.pool = pool
 
@@ -179,10 +187,10 @@ final class HDRFrameGenerator {
 
         // Source textures (reused for every phase). Keep CVMetalTexture refs alive until the GPU
         // finishes (waitUntilCompleted below).
-        guard let yAref  = cvTexture(prev, .r16Unorm,  w,     h,     0, read, cache),
-              let uvAref = cvTexture(prev, .rg16Unorm, w / 2, h / 2, 1, read, cache),
-              let yBref  = cvTexture(cur,  .r16Unorm,  w,     h,     0, read, cache),
-              let uvBref = cvTexture(cur,  .rg16Unorm, w / 2, h / 2, 1, read, cache),
+        guard let yAref  = cvTexture(prev, yFmt,  w,     h,     0, read, cache),
+              let uvAref = cvTexture(prev, uvFmt, w / 2, h / 2, 1, read, cache),
+              let yBref  = cvTexture(cur,  yFmt,  w,     h,     0, read, cache),
+              let uvBref = cvTexture(cur,  uvFmt, w / 2, h / 2, 1, read, cache),
               let yA = CVMetalTextureGetTexture(yAref), let uvA = CVMetalTextureGetTexture(uvAref),
               let yB = CVMetalTextureGetTexture(yBref), let uvB = CVMetalTextureGetTexture(uvBref) else {
             logErr("texture creation failed")
@@ -207,8 +215,8 @@ final class HDRFrameGenerator {
             guard CVPixelBufferPoolCreatePixelBuffer(kCFAllocatorDefault, pool, &dest) == kCVReturnSuccess,
                   let destBuf = dest else { continue }
             CVBufferPropagateAttachments(cur, destBuf)   // carry HDR color tags
-            guard let dYref  = cvTexture(destBuf, .r16Unorm,  w,     h,     0, rt, cache),
-                  let dUVref = cvTexture(destBuf, .rg16Unorm, w / 2, h / 2, 1, rt, cache),
+            guard let dYref  = cvTexture(destBuf, yFmt,  w,     h,     0, rt, cache),
+                  let dUVref = cvTexture(destBuf, uvFmt, w / 2, h / 2, 1, rt, cache),
                   let dY = CVMetalTextureGetTexture(dYref), let dUV = CVMetalTextureGetTexture(dUVref) else {
                 continue
             }
