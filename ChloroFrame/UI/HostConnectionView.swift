@@ -37,9 +37,13 @@ struct HostConnectionView: View {
     @AppStorage("streamOverrideFPS")         private var overrideFPS         = 0
     @AppStorage("streamOverrideBitrate")     private var overrideBitrate     = 0    // kbps
     @AppStorage("localUpscaling")            private var localUpscaling      = false
-    @AppStorage("frameGeneration")           private var frameGeneration     = false
-    @AppStorage("frameGenHDR")               private var frameGenHDR         = false
+    @AppStorage("upscalePercent")            private var upscalePercent      = 50   // % of native, 20-95
+    @AppStorage("frameGenMode")              private var frameGenMode        = "off" // off | vt | flow
+    @AppStorage("frameGenMult")              private var frameGenMult        = 2     // 2 or 4
+    @AppStorage("frameGenFlowMode")          private var frameGenFlowMode    = "multiplier" // multiplier | target
+    @AppStorage("frameGenTargetFps")         private var frameGenTargetFps   = 120
     @AppStorage("absoluteMouseMode")         private var absoluteMouseMode   = false
+    @AppStorage("lowLatencyMode")            private var lowLatencyMode      = false
 
     @State private var client: SunshineHTTPClient
     @State private var phase: FlowPhase = .connecting
@@ -179,9 +183,13 @@ struct HostConnectionView: View {
                         overrideFPS:        $overrideFPS,
                         overrideBitrate:    $overrideBitrate,
                         localUpscaling:     $localUpscaling,
-                        frameGeneration:    $frameGeneration,
-                        frameGenHDR:        $frameGenHDR,
-                        absoluteMouseMode:  $absoluteMouseMode
+                        upscalePercent:     $upscalePercent,
+                        frameGenMode:       $frameGenMode,
+                        frameGenMult:       $frameGenMult,
+                        frameGenFlowMode:   $frameGenFlowMode,
+                        frameGenTargetFps:  $frameGenTargetFps,
+                        absoluteMouseMode:  $absoluteMouseMode,
+                        lowLatencyMode:     $lowLatencyMode
                     )
                 }
 
@@ -387,42 +395,62 @@ struct HostConnectionView: View {
             t.stats.setReconstruction(requested: localUpscaling, active: false,
                                       outW: 0, outH: 0, reason: localUpscaling ? "starting" : "")
 
-            // Optional temporal frame generation at the decode->enqueue seam: synthesize a
-            // midpoint frame between each decoded pair (2x). Two paths, picked by stream
-            // HDR-ness: VTLowLatencyFrameInterpolation for SDR (NV12), and the experimental
-            // optical-flow generator for HDR (P010, which VT rejects). Both add ~one
-            // source-frame interval of latency and report state to the HUD. The generator is
-            // captured by the closures, so it lives for the stream.
+            // Frame generation at the decode->enqueue seam. Mode is user-chosen:
+            //   vt   = VTLowLatencyFrameInterpolation, 2x/4x, SDR only (rejects P010).
+            //   flow = experimental optical-flow generator, HDR (P010) only for now; multiplier
+            //          or target-fps (approximated to the nearest integer multiple).
+            // The generator is captured by the closures so it lives for the stream. Present rate
+            // is driven to source x multiplier (capped at display refresh) or synthesized frames
+            // would be deadline-dropped.
+            let displayMax = DisplayConfig.detect().fps
             var fgSubmit: ((CVPixelBuffer, CMTime) -> Void)? = nil
             var fgReset:  (() -> Void)? = nil
+            var fgPresentFps = config.fps
 
-            if enableHdr && frameGenHDR {
-                do {
-                    let gen = try HDRFrameGenerator(width: config.width, height: config.height)
-                    gen.onFrame = { pixelBuffer, pts in r.enqueueFrame(pixelBuffer, pts: pts) }
-                    fgSubmit = { pixelBuffer, pts in gen.submit(pixelBuffer, pts: pts) }
-                    fgReset  = { gen.reset() }
-                    t.stats.setFrameGen(requested: true, active: true, reason: "HDR optical flow")
-                } catch {
-                    t.stats.setFrameGen(requested: true, active: false, reason: error.localizedDescription)
-                }
-            } else if !enableHdr && frameGeneration {
+            switch frameGenMode {
+            case "vt":
+                let mult = frameGenMult >= 4 ? 4 : 2
+                let srcFormat: OSType = enableHdr
+                    ? kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange
+                    : kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
                 do {
                     let interp = try FrameInterpolator(width: config.width, height: config.height,
-                                                       sourcePixelFormat: kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange)
+                                                       sourcePixelFormat: srcFormat, multiplier: mult)
                     interp.onFrame = { pixelBuffer, pts in r.enqueueFrame(pixelBuffer, pts: pts) }
                     fgSubmit = { pixelBuffer, pts in interp.submit(pixelBuffer, pts: pts) }
                     fgReset  = { interp.reset() }
-                    t.stats.setFrameGen(requested: true, active: true, reason: "")
+                    fgPresentFps = min(config.fps * mult, displayMax)
+                    t.stats.setFrameGen(requested: true, active: true, reason: "VT \(mult)×")
                 } catch {
                     t.stats.setFrameGen(requested: true, active: false, reason: error.localizedDescription)
                 }
-            } else {
-                // A toggle may be on but not applicable to this stream (SDR toggle on an HDR
-                // stream, or vice versa).
-                let mismatched = (frameGeneration && enableHdr) || (frameGenHDR && !enableHdr)
-                t.stats.setFrameGen(requested: mismatched, active: false,
-                                    reason: mismatched ? "n/a for this stream" : "")
+
+            case "flow":
+                if !enableHdr {
+                    t.stats.setFrameGen(requested: true, active: false, reason: "HDR streams only")
+                } else {
+                    let mult: Int
+                    if frameGenFlowMode == "target" {
+                        let target = max(config.fps + 1, min(frameGenTargetFps, displayMax))
+                        mult = max(2, min(4, Int((Double(target) / Double(config.fps)).rounded())))
+                    } else {
+                        mult = frameGenMult >= 4 ? 4 : 2
+                    }
+                    do {
+                        let gen = try HDRFrameGenerator(width: config.width, height: config.height,
+                                                        interpolatedFrames: mult - 1)
+                        gen.onFrame = { pixelBuffer, pts in r.enqueueFrame(pixelBuffer, pts: pts) }
+                        fgSubmit = { pixelBuffer, pts in gen.submit(pixelBuffer, pts: pts) }
+                        fgReset  = { gen.reset() }
+                        fgPresentFps = min(config.fps * mult, displayMax)
+                        t.stats.setFrameGen(requested: true, active: true, reason: "flow \(mult)×")
+                    } catch {
+                        t.stats.setFrameGen(requested: true, active: false, reason: error.localizedDescription)
+                    }
+                }
+
+            default:   // "off"
+                t.stats.setFrameGen(requested: false, active: false, reason: "")
             }
 
             if let fgSubmit {
@@ -433,13 +461,8 @@ struct HostConnectionView: View {
                 t.onClockReset = { r.resetClockAnchor() }
             }
 
-            // Present rate: when frame gen is active we emit 2x frames, so the renderer and the
-            // display link must run at 2x the negotiated fps (capped at the display's refresh)
-            // or the synthesized frames are just deadline-dropped. Otherwise present at the
-            // negotiated rate.
-            let presentFps = fgSubmit != nil
-                ? min(config.fps * 2, DisplayConfig.detect().fps)
-                : config.fps
+            let presentFps = fgSubmit != nil ? fgPresentFps : config.fps
+            r.lowLatencyMode = lowLatencyMode   // must be set before setStreamFps (it sizes the buffer)
             r.setStreamFps(presentFps)
             streamState.presentFps = presentFps
             t.onENetDisconnect = {
@@ -476,16 +499,26 @@ struct HostConnectionView: View {
 
     // Merge auto-detected display config with any user overrides from AppStorage.
     private func buildDisplayConfig(base: DisplayConfig) -> DisplayConfig {
+        let fps     = overrideFPS     > 0 ? overrideFPS     : base.fps
+        let bitrate = overrideBitrate > 0 ? overrideBitrate : 0   // 0 → auto-compute
+
+        // Upscaling on: negotiate `upscalePercent`% of the display's physical pixels; the
+        // renderer reconstructs to 100%. This overrides the manual resolution picker.
+        if localUpscaling {
+            let phys = DisplayConfig.physicalPixelSize()
+            let pct  = Double(max(20, min(95, upscalePercent))) / 100.0
+            let w = max(2, Int((Double(phys.width)  * pct).rounded()) & ~1)
+            let h = max(2, Int((Double(phys.height) * pct).rounded()) & ~1)
+            return DisplayConfig(width: w, height: h, fps: fps, hdr: base.hdr, bitrateOverride: bitrate)
+        }
+
         // Tolerant of custom entry: "1280x720", "1280 X 720", etc. all parse.
         let normalized = overrideResolution.lowercased().replacingOccurrences(of: " ", with: "")
         let parts = normalized.split(separator: "x")
         let w = parts.count == 2 ? (Int(parts[0]).map { $0 & ~1 } ?? 0) : 0
         let h = parts.count == 2 ? (Int(parts[1]).map { $0 & ~1 } ?? 0) : 0
-
         let width   = w > 0 ? w : base.width
         let height  = h > 0 ? h : base.height
-        let fps     = overrideFPS     > 0 ? overrideFPS     : base.fps
-        let bitrate = overrideBitrate > 0 ? overrideBitrate : 0   // 0 → auto-compute
         return DisplayConfig(width: width, height: height, fps: fps, hdr: base.hdr, bitrateOverride: bitrate)
     }
 }
@@ -497,9 +530,17 @@ private struct StreamSettingsPopover: View {
     @Binding var overrideFPS: Int
     @Binding var overrideBitrate: Int
     @Binding var localUpscaling: Bool
-    @Binding var frameGeneration: Bool
-    @Binding var frameGenHDR: Bool
+    @Binding var upscalePercent: Int
+    @Binding var frameGenMode: String
+    @Binding var frameGenMult: Int
+    @Binding var frameGenFlowMode: String
+    @Binding var frameGenTargetFps: Int
     @Binding var absoluteMouseMode: Bool
+    @Binding var lowLatencyMode: Bool
+
+    // Local text for the custom upscale % / target fps fields (committed on submit/apply).
+    @State private var customPercentText: String = ""
+    @State private var targetFpsText: String = ""
 
     // Fetched on appear — owned by the popover so there's no parent-to-child timing race.
     @State private var availableModes: [DisplayResolution] = []
@@ -524,6 +565,19 @@ private struct StreamSettingsPopover: View {
         customResolution = overrideResolution
     }
 
+    private func applyCustomPercent() {
+        guard let v = Int(customPercentText.trimmingCharacters(in: .whitespaces)) else { return }
+        upscalePercent = max(20, min(95, v))
+        customPercentText = "\(upscalePercent)"
+    }
+
+    private func applyTargetFps() {
+        guard let v = Int(targetFpsText.trimmingCharacters(in: .whitespaces)) else { return }
+        // Coarse field validation; negotiate enforces > stream fps and <= display refresh.
+        frameGenTargetFps = max(30, min(240, v))
+        targetFpsText = "\(frameGenTargetFps)"
+    }
+
     private var availableFPS: [Int] {
         if let mode = selectedMode { return mode.refreshRates }
         return Array(Set(availableModes.flatMap { $0.refreshRates })).sorted()
@@ -541,29 +595,27 @@ private struct StreamSettingsPopover: View {
 
             Form {
                 Section {
-                    Picker("Resolution", selection: $overrideResolution) {
-                        Text("Auto").tag("")
-                        if !availableModes.isEmpty { Divider() }
-                        ForEach(availableModes) { mode in
-                            Text(mode.label).tag(mode.id)
+                    // When upscaling is on, the source is set by the % picker below, so hide the
+                    // absolute resolution controls to avoid two competing sources of truth.
+                    if !localUpscaling {
+                        Picker("Resolution", selection: $overrideResolution) {
+                            Text("Auto").tag("")
+                            if !availableModes.isEmpty { Divider() }
+                            ForEach(availableModes) { mode in
+                                Text(mode.label).tag(mode.id)
+                            }
+                            if !overrideResolution.isEmpty && selectedMode == nil {
+                                Divider()
+                                Text("Custom (\(overrideResolution))").tag(overrideResolution)
+                            }
                         }
-                        // Reflect a typed custom value that isn't one of the display's modes,
-                        // so the picker shows the active selection instead of looking empty.
-                        if !overrideResolution.isEmpty && selectedMode == nil {
-                            Divider()
-                            Text("Custom (\(overrideResolution))").tag(overrideResolution)
-                        }
-                    }
-                    .onChange(of: overrideResolution) { _, _ in
-                        // Clear FPS override when resolution changes —
-                        // the previous fps value may not exist in the new mode.
-                        overrideFPS = 0
-                    }
+                        .onChange(of: overrideResolution) { _, _ in overrideFPS = 0 }
 
-                    TextField("Custom (e.g. 1280x720)", text: $customResolution)
-                        .textFieldStyle(.roundedBorder)
-                        .onSubmit { applyCustomResolution() }
-                        .help("Stream at a custom resolution, even one your display doesn't list. Press Return to apply; it overrides the picker above. Useful for testing upscaling.")
+                        TextField("Custom (e.g. 1280x720)", text: $customResolution)
+                            .textFieldStyle(.roundedBorder)
+                            .onSubmit { applyCustomResolution() }
+                            .help("Stream at a custom resolution, even one your display doesn't list. Press Return to apply.")
+                    }
 
                     Picker("Frame Rate", selection: $overrideFPS) {
                         Text("Auto").tag(0)
@@ -585,13 +637,66 @@ private struct StreamSettingsPopover: View {
                     }
                 }
 
-                Section("Reconstruction (experimental)") {
-                    Toggle("Local Upscaling", isOn: $localUpscaling)
-                        .help("Upscale the decoded frame to your display's native resolution using MetalFX spatial scaling. Sharper than the default stretch. Works at native resolution and with HDR; no added latency. Requires macOS 26 on Apple Silicon.")
-                    Toggle("Frame Generation (SDR)", isOn: $frameGeneration)
-                        .help("Synthesize an intermediate frame between each decoded pair (2x) via VideoToolbox to smooth a low frame rate. Adds about one source-frame interval of latency. Used only for SDR streams: the API does not accept HDR (P010). Requires macOS 26 on Apple Silicon.")
-                    Toggle("Frame Generation — HDR (optical flow, experimental)", isOn: $frameGenHDR)
-                        .help("Experimental optical-flow frame generation for HDR streams, done in Metal on the linear HDR image since VideoToolbox interpolation rejects P010. Expect artifacts on fast motion and scene cuts. Used only for HDR streams.")
+                Section("Upscaling") {
+                    Toggle("Local Upscaling (MetalFX)", isOn: $localUpscaling)
+                        .help("Negotiate a lower resolution and reconstruct to your display's native resolution with MetalFX spatial scaling. Works with HDR; no added latency.")
+                    if localUpscaling {
+                        Picker("Stream resolution", selection: $upscalePercent) {
+                            Text("25% of native").tag(25)
+                            Text("50% of native").tag(50)
+                            Text("75% of native").tag(75)
+                            if ![25, 50, 75].contains(upscalePercent) {
+                                Text("\(upscalePercent)% (custom)").tag(upscalePercent)
+                            }
+                        }
+                        HStack {
+                            TextField("Custom % (20-95)", text: $customPercentText)
+                                .textFieldStyle(.roundedBorder)
+                                .onSubmit { applyCustomPercent() }
+                            Button("Apply") { applyCustomPercent() }
+                        }
+                    }
+                }
+
+                Section("Frame Generation (experimental)") {
+                    Picker("Mode", selection: $frameGenMode) {
+                        Text("Off").tag("off")
+                        Text("VT LowLatency (SDR)").tag("vt")
+                        Text("Optical Flow (HDR)").tag("flow")
+                    }
+                    if frameGenMode == "vt" {
+                        Picker("Multiplier", selection: $frameGenMult) {
+                            Text("2×").tag(2)
+                            Text("4×").tag(4)
+                        }
+                        .pickerStyle(.segmented)
+                    } else if frameGenMode == "flow" {
+                        Picker("Flow mode", selection: $frameGenFlowMode) {
+                            Text("Multiplier").tag("multiplier")
+                            Text("Target FPS").tag("target")
+                        }
+                        if frameGenFlowMode == "multiplier" {
+                            Picker("Multiplier", selection: $frameGenMult) {
+                                Text("2×").tag(2)
+                                Text("4×").tag(4)
+                            }
+                            .pickerStyle(.segmented)
+                        } else {
+                            HStack {
+                                TextField("Target fps (30-240)", text: $targetFpsText)
+                                    .textFieldStyle(.roundedBorder)
+                                    .onSubmit { applyTargetFps() }
+                                Button("Apply") { applyTargetFps() }
+                            }
+                            Text("Target \(frameGenTargetFps) fps. Must exceed your stream fps; capped at your display refresh; approximated to the nearest 2×/3×/4×.")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+                }
+
+                Section("Latency") {
+                    Toggle("Low Latency Mode", isOn: $lowLatencyMode)
+                        .help("Floor the playout buffer at 1-2 frames and tighten the clock servo for the most responsive input, at the cost of smoothness (more repeated/dropped frames under network jitter). Default off keeps a larger jitter buffer for smoother playback. Takes effect on the next connect.")
                 }
 
                 Section("Mouse") {
@@ -618,6 +723,8 @@ private struct StreamSettingsPopover: View {
             availableModes = DisplayConfig.availableResolutions()
             // Seed the custom field with any value not matching a listed mode.
             if selectedMode == nil { customResolution = overrideResolution }
+            customPercentText = "\(upscalePercent)"
+            targetFpsText = "\(frameGenTargetFps)"
         }
     }
 }

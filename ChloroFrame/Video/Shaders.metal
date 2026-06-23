@@ -135,24 +135,28 @@ fragment float4 fragmentShaderYUVHDR(VertexOut in [[stage_in]],
 // light. Cheap and good enough for small motion; highlights blended across large motion
 // will be slightly off. Reuses `vertexShader`.
 
+// `phase` t in (0,1): the synthesized frame's position between A (t=0) and B (t=1).
+// Backward gather: sample A at uv - t*flow and B at uv + (1-t)*flow, blend (1-t)/t.
 fragment float4 fragmentWarpBlendY(VertexOut in [[stage_in]],
                                    texture2d<float> yA   [[texture(0)]],
                                    texture2d<float> yB   [[texture(1)]],
-                                   texture2d<float> flow [[texture(2)]]) {
+                                   texture2d<float> flow [[texture(2)]],
+                                   constant float& phase [[buffer(0)]]) {
     constexpr sampler s(mag_filter::linear, min_filter::linear);
     float2 fn = flow.sample(s, in.texCoord).rg / float2(flow.get_width(), flow.get_height());
-    float a = yA.sample(s, in.texCoord - 0.5 * fn).r;
-    float b = yB.sample(s, in.texCoord + 0.5 * fn).r;
-    return float4(0.5 * (a + b), 0.0, 0.0, 1.0);
+    float a = yA.sample(s, in.texCoord - phase * fn).r;
+    float b = yB.sample(s, in.texCoord + (1.0 - phase) * fn).r;
+    return float4((1.0 - phase) * a + phase * b, 0.0, 0.0, 1.0);
 }
 
 fragment float4 fragmentWarpBlendUV(VertexOut in [[stage_in]],
                                     texture2d<float> uvA  [[texture(0)]],
                                     texture2d<float> uvB  [[texture(1)]],
-                                    texture2d<float> flow [[texture(2)]]) {
+                                    texture2d<float> flow [[texture(2)]],
+                                    constant float& phase [[buffer(0)]]) {
     constexpr sampler s(mag_filter::linear, min_filter::linear);
     float2 fn = flow.sample(s, in.texCoord).rg / float2(flow.get_width(), flow.get_height());
-    float2 a = uvA.sample(s, in.texCoord - 0.5 * fn).rg;
-    float2 b = uvB.sample(s, in.texCoord + 0.5 * fn).rg;
-    return float4(0.5 * (a + b), 0.0, 1.0);
+    float2 a = uvA.sample(s, in.texCoord - phase * fn).rg;
+    float2 b = uvB.sample(s, in.texCoord + (1.0 - phase) * fn).rg;
+    return float4((1.0 - phase) * a + phase * b, 0.0, 1.0);
 }

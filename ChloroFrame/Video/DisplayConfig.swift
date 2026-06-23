@@ -58,6 +58,21 @@ struct DisplayConfig {
         return DisplayConfig(width: w, height: h, fps: fps, hdr: hdr)
     }
 
+    /// Physical pixel resolution of the active display (logical points × backing scale),
+    /// even-aligned. This is what the renderer's drawable upscales to, so it's the "100%"
+    /// reference for the upscaling percentage: source = percent% of this.
+    @MainActor
+    static func physicalPixelSize() -> (width: Int, height: Int) {
+        let screen = NSApp.keyWindow?.screen
+                  ?? NSApp.mainWindow?.screen
+                  ?? NSScreen.main
+                  ?? NSScreen.screens.first!
+        let scale = screen.backingScaleFactor
+        let w = Int((screen.frame.width  * scale).rounded()) & ~1
+        let h = Int((screen.frame.height * scale).rounded()) & ~1
+        return (w, h)
+    }
+
     // MARK: - Available display modes
 
     /// Returns the display modes available on the screen containing the focused window.

@@ -47,7 +47,17 @@ final class HDRFrameGenerator {
     private let pendingLock = NSLock()
     private var pending = 0
 
-    init(width: Int, height: Int) throws {
+    // Phases (evenly spaced) of the frames to synthesize per real pair. n inserted frames ->
+    // phases i/(n+1). Our warp does arbitrary phases, so any count works (2x: [0.5], 3x:
+    // [1/3,2/3], 4x: [0.25,0.5,0.75]).
+    private let phaseValues: [Double]
+
+    /// - Parameter interpolatedFrames: number of frames to synthesize between each real pair
+    ///   (1 = 2x, 2 = 3x, 3 = 4x).
+    init(width: Int, height: Int, interpolatedFrames: Int) throws {
+        let n = max(1, min(3, interpolatedFrames))
+        self.phaseValues = (1...n).map { Double($0) / Double(n + 1) }
+
         guard let device = MTLCreateSystemDefaultDevice(),
               let commandQueue = device.makeCommandQueue() else {
             throw InterpolatorError.message("no Metal device")
@@ -89,7 +99,7 @@ final class HDRFrameGenerator {
             throw InterpolatorError.message("P010 pool alloc failed")
         }
         self.pool = pool
-        Swift.print("[ChloroFrame][hdr-fg] optical-flow frame generation \(width)x\(height) 2x")
+        Swift.print("[ChloroFrame][hdr-fg] optical-flow frame generation \(width)x\(height) \(n + 1)x")
     }
 
     deinit {
@@ -123,59 +133,69 @@ final class HDRFrameGenerator {
             return
         }
 
-        let midPTS = CMTimeAdd(prevPTS, CMTimeMultiplyByRatio(CMTimeSubtract(pts, prevPTS), multiplier: 1, divisor: 2))
-
-        if let mid = makeMidpoint(prev: prev, cur: buffer) {
-            onFrame?(mid, midPTS)   // synthesized midpoint first
+        let delta = CMTimeSubtract(pts, prevPTS)
+        let frames = makeFrames(prev: prev, cur: buffer)
+        for (buf, ph) in frames {   // synthesized frames in phase order
+            let phPTS = CMTimeAdd(prevPTS, CMTimeMultiplyByRatio(delta, multiplier: Int32((ph * 1000).rounded()), divisor: 1000))
+            onFrame?(buf, phPTS)
         }
-        onFrame?(buffer, pts)       // then the real frame
+        onFrame?(buffer, pts)        // then the real frame
     }
 
-    private func makeMidpoint(prev: CVPixelBuffer, cur: CVPixelBuffer) -> CVPixelBuffer? {
-        guard let cache = textureCache, let pool = pool else { return nil }
+    /// Computes optical flow once, then warps both frames toward each configured phase, returning
+    /// the synthesized P010 buffers paired with their phase.
+    private func makeFrames(prev: CVPixelBuffer, cur: CVPixelBuffer) -> [(CVPixelBuffer, Double)] {
+        guard let cache = textureCache, let pool = pool else { return [] }
 
         // Optical flow prev -> cur (Vision: handler image = prev, target = cur).
-        guard let flowBuffer = opticalFlow(from: prev, to: cur) else { return nil }
+        guard let flowBuffer = opticalFlow(from: prev, to: cur) else { return [] }
 
         let w = CVPixelBufferGetWidth(cur), h = CVPixelBufferGetHeight(cur)
-
-        var dest: CVPixelBuffer?
-        guard CVPixelBufferPoolCreatePixelBuffer(kCFAllocatorDefault, pool, &dest) == kCVReturnSuccess,
-              let destBuf = dest else { return nil }
-        // Carry HDR color tags (PQ / BT.2020) onto the synthesized buffer.
-        CVBufferPropagateAttachments(cur, destBuf)
-
         let read: [String: Any] = [kCVMetalTextureUsage as String: MTLTextureUsage.shaderRead.rawValue]
         let rt:   [String: Any] = [kCVMetalTextureUsage as String: MTLTextureUsage([.renderTarget, .shaderRead]).rawValue]
 
-        // Keep the CVMetalTexture refs alive until the GPU finishes (waitUntilCompleted below);
-        // releasing them early can invalidate the backing MTLTexture.
-        guard let yAref  = cvTexture(prev,    .r16Unorm,  w,     h,     0, read, cache),
-              let uvAref = cvTexture(prev,    .rg16Unorm, w / 2, h / 2, 1, read, cache),
-              let yBref  = cvTexture(cur,     .r16Unorm,  w,     h,     0, read, cache),
-              let uvBref = cvTexture(cur,     .rg16Unorm, w / 2, h / 2, 1, read, cache),
-              let dYref  = cvTexture(destBuf, .r16Unorm,  w,     h,     0, rt,   cache),
-              let dUVref = cvTexture(destBuf, .rg16Unorm, w / 2, h / 2, 1, rt,   cache),
-              let flowRef = cvTextureFlow(flowBuffer, cache) else {
-            logErr("texture creation failed")
-            return nil
-        }
-        guard let yA = CVMetalTextureGetTexture(yAref), let uvA = CVMetalTextureGetTexture(uvAref),
+        // Source textures + flow, computed once and reused for every phase. Keep CVMetalTexture
+        // refs alive until the GPU finishes (waitUntilCompleted below).
+        guard let yAref  = cvTexture(prev, .r16Unorm,  w,     h,     0, read, cache),
+              let uvAref = cvTexture(prev, .rg16Unorm, w / 2, h / 2, 1, read, cache),
+              let yBref  = cvTexture(cur,  .r16Unorm,  w,     h,     0, read, cache),
+              let uvBref = cvTexture(cur,  .rg16Unorm, w / 2, h / 2, 1, read, cache),
+              let flowRef = cvTextureFlow(flowBuffer, cache),
+              let yA = CVMetalTextureGetTexture(yAref), let uvA = CVMetalTextureGetTexture(uvAref),
               let yB = CVMetalTextureGetTexture(yBref), let uvB = CVMetalTextureGetTexture(uvBref),
-              let dY = CVMetalTextureGetTexture(dYref), let dUV = CVMetalTextureGetTexture(dUVref),
-              let flow = CVMetalTextureGetTexture(flowRef) else { return nil }
+              let flow = CVMetalTextureGetTexture(flowRef) else {
+            logErr("texture creation failed")
+            return []
+        }
 
-        guard let cb = commandQueue.makeCommandBuffer() else { return nil }
-        encodeWarp(cb, pso: warpYPSO,  a: yA,  b: yB,  flow: flow, dst: dY)
-        encodeWarp(cb, pso: warpUVPSO, a: uvA, b: uvB, flow: flow, dst: dUV)
+        guard let cb = commandQueue.makeCommandBuffer() else { return [] }
+
+        var outputs: [(CVPixelBuffer, Double)] = []
+        var destRefs: [CVMetalTexture] = []   // retain dest textures through completion
+        for ph in phaseValues {
+            var dest: CVPixelBuffer?
+            guard CVPixelBufferPoolCreatePixelBuffer(kCFAllocatorDefault, pool, &dest) == kCVReturnSuccess,
+                  let destBuf = dest else { continue }
+            CVBufferPropagateAttachments(cur, destBuf)   // carry HDR color tags
+            guard let dYref  = cvTexture(destBuf, .r16Unorm,  w,     h,     0, rt, cache),
+                  let dUVref = cvTexture(destBuf, .rg16Unorm, w / 2, h / 2, 1, rt, cache),
+                  let dY = CVMetalTextureGetTexture(dYref), let dUV = CVMetalTextureGetTexture(dUVref) else {
+                continue
+            }
+            encodeWarp(cb, pso: warpYPSO,  a: yA,  b: yB,  flow: flow, dst: dY,  phase: Float(ph))
+            encodeWarp(cb, pso: warpUVPSO, a: uvA, b: uvB, flow: flow, dst: dUV, phase: Float(ph))
+            destRefs.append(dYref); destRefs.append(dUVref)
+            outputs.append((destBuf, ph))
+        }
+
         cb.commit()
         cb.waitUntilCompleted()
-        _ = (yAref, uvAref, yBref, uvBref, dYref, dUVref, flowRef)   // retain through completion
-        return destBuf
+        _ = (yAref, uvAref, yBref, uvBref, flowRef, destRefs)   // retain through completion
+        return outputs
     }
 
     private func encodeWarp(_ cb: MTLCommandBuffer, pso: MTLRenderPipelineState,
-                            a: MTLTexture, b: MTLTexture, flow: MTLTexture, dst: MTLTexture) {
+                            a: MTLTexture, b: MTLTexture, flow: MTLTexture, dst: MTLTexture, phase: Float) {
         let rpd = MTLRenderPassDescriptor()
         rpd.colorAttachments[0].texture = dst
         rpd.colorAttachments[0].loadAction = .dontCare
@@ -185,6 +205,8 @@ final class HDRFrameGenerator {
         enc.setFragmentTexture(a, index: 0)
         enc.setFragmentTexture(b, index: 1)
         enc.setFragmentTexture(flow, index: 2)
+        var ph = phase
+        enc.setFragmentBytes(&ph, length: MemoryLayout<Float>.size, index: 0)
         enc.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
         enc.endEncoding()
     }

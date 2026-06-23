@@ -46,12 +46,25 @@ final class FrameInterpolator {
     private let pendingLock = NSLock()
     private var pending = 0
 
-    init(width: Int, height: Int, sourcePixelFormat: OSType) throws {
+    // Interpolation phases (uniform within the VT-supported 1/2^x grid): [0.5] for 2x,
+    // [0.25,0.5,0.75] for 4x. The number of inserted frames per real pair is phaseValues.count.
+    private let multiplier: Int
+    private let phaseValues: [Double]
+    private let interpPhases: [Float]
+
+    /// - Parameter multiplier: 2 (one inserted frame at 0.5) or 4 (three at 0.25/0.5/0.75).
+    init(width: Int, height: Int, sourcePixelFormat: OSType, multiplier: Int) throws {
+        let mult = multiplier >= 4 ? 4 : 2
+        self.multiplier = mult
+        self.phaseValues = mult == 4 ? [0.25, 0.5, 0.75] : [0.5]
+        self.interpPhases = phaseValues.map { Float($0) }
+        let configFrames = mult == 4 ? 2 : 1   // VT x: exposes 2^x - 1 phases
+
         guard VTLowLatencyFrameInterpolationConfiguration.isSupported else {
             throw InterpolatorError.message("frame interp unavailable on device")
         }
         guard let config = VTLowLatencyFrameInterpolationConfiguration(
-            frameWidth: width, frameHeight: height, numberOfInterpolatedFrames: 1) else {
+            frameWidth: width, frameHeight: height, numberOfInterpolatedFrames: configFrames) else {
             throw InterpolatorError.message("src \(width)×\(height) not supported")
         }
 
@@ -72,7 +85,7 @@ final class FrameInterpolator {
             throw InterpolatorError.message("pool alloc failed")
         }
         self.pool = p
-        Swift.print("[ChloroFrame][interp] frame generation \(width)x\(height) 2x")
+        Swift.print("[ChloroFrame][interp] frame generation \(width)x\(height) \(mult)x")
     }
 
     deinit { processor.endSession() }
@@ -105,23 +118,30 @@ final class FrameInterpolator {
             return
         }
 
-        let midPTS = CMTimeAdd(prevPTS, CMTimeMultiplyByRatio(CMTimeSubtract(pts, prevPTS), multiplier: 1, divisor: 2))
-
         guard let srcFrame = VTFrameProcessorFrame(buffer: buffer, presentationTimeStamp: pts),
               let preFrame = VTFrameProcessorFrame(buffer: prev, presentationTimeStamp: prevPTS) else {
             onFrame?(buffer, pts); return
         }
 
-        var dest: CVPixelBuffer?
-        guard CVPixelBufferPoolCreatePixelBuffer(kCFAllocatorDefault, pool, &dest) == kCVReturnSuccess,
-              let destBuf = dest,
-              let destFrame = VTFrameProcessorFrame(buffer: destBuf, presentationTimeStamp: midPTS) else {
-            onFrame?(buffer, pts); return
+        // One destination buffer per phase, in phase order.
+        let delta = CMTimeSubtract(pts, prevPTS)
+        var destBufs: [CVPixelBuffer] = []
+        var destFrames: [VTFrameProcessorFrame] = []
+        var destPTSs: [CMTime] = []
+        for ph in phaseValues {
+            var dest: CVPixelBuffer?
+            let phPTS = CMTimeAdd(prevPTS, CMTimeMultiplyByRatio(delta, multiplier: Int32((ph * 1000).rounded()), divisor: 1000))
+            guard CVPixelBufferPoolCreatePixelBuffer(kCFAllocatorDefault, pool, &dest) == kCVReturnSuccess,
+                  let destBuf = dest,
+                  let destFrame = VTFrameProcessorFrame(buffer: destBuf, presentationTimeStamp: phPTS) else {
+                onFrame?(buffer, pts); return
+            }
+            destBufs.append(destBuf); destFrames.append(destFrame); destPTSs.append(phPTS)
         }
 
         guard let params = VTLowLatencyFrameInterpolationParameters(
             sourceFrame: srcFrame, previousFrame: preFrame,
-            interpolationPhase: [0.5], destinationFrames: [destFrame]) else {
+            interpolationPhase: interpPhases, destinationFrames: destFrames) else {
             onFrame?(buffer, pts); return
         }
 
@@ -136,8 +156,10 @@ final class FrameInterpolator {
         }
         done.wait()
 
-        if ok { onFrame?(destBuf, midPTS) }   // interpolated midpoint first
-        onFrame?(buffer, pts)                 // then the real frame
+        if ok {
+            for i in destBufs.indices { onFrame?(destBufs[i], destPTSs[i]) }   // inserted frames in order
+        }
+        onFrame?(buffer, pts)                                                   // then the real frame
     }
 
     private func logErr(_ message: String) {

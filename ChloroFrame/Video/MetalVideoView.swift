@@ -612,6 +612,12 @@ class MetalVideoRenderer {
     private var minimumBufferFrames: Double = 3.0
     private var targetBufferFrames: Double = 3.0
     private var maximumBufferFrames: Double = 6.0
+    // Low-latency mode: floor the buffer at 1-2 frames, cap growth tightly, and tighten the
+    // clock servo so it holds the small buffer instead of drifting. Trades smoothness (more
+    // repeats/underruns under jitter) for responsiveness. Set before setStreamFps.
+    var lowLatencyMode = false
+    private var servoGain = 0.01      // fraction of buffer-time error corrected per enqueue
+    private var servoClamp = 0.0005   // max baseWall correction per enqueue (seconds)
     private var maxQueueDepth: Int {
         max(4, Int(ceil(targetBufferFrames)) + 3)
     }
@@ -775,9 +781,20 @@ class MetalVideoRenderer {
     func setStreamFps(_ fps: Int) {
         queueLock.lock()
         frameDuration = fps > 0 ? 1.0 / Double(fps) : 1.0 / 120.0
-        minimumBufferFrames = fps >= 90 ? 3.0 : 2.0
+        if lowLatencyMode {
+            // Floor at 1-2 frames, cap growth tightly, tighten the servo (faster convergence,
+            // larger per-enqueue correction) so latency stays low at the cost of smoothness.
+            minimumBufferFrames = fps >= 90 ? 2.0 : 1.0
+            maximumBufferFrames = fps >= 90 ? 3.0 : 2.0
+            servoGain  = 0.03
+            servoClamp = 0.001
+        } else {
+            minimumBufferFrames = fps >= 90 ? 3.0 : 2.0
+            maximumBufferFrames = fps >= 90 ? 6.0 : 4.0
+            servoGain  = 0.01
+            servoClamp = 0.0005
+        }
         targetBufferFrames = minimumBufferFrames
-        maximumBufferFrames = fps >= 90 ? 6.0 : 4.0
         lastBufferGrowthTime = 0
         lastStressTime = 0
         lastBufferDecayTime = 0
@@ -867,7 +884,7 @@ class MetalVideoRenderer {
         // smoothly drains latency after a buffer-target decay and rebuilds the buffer
         // after a catch-up burst flushes it.
         let bufferTimeError = (targetWall - now) - playoutDelay
-        baseWall! -= max(-0.0005, min(0.0005, bufferTimeError * 0.01))
+        baseWall! -= max(-servoClamp, min(servoClamp, bufferTimeError * servoGain))
 
         // Buffer decay: growth is fast (stress-driven), decay is slow — after 10 s with
         // no underflow/overwrite/late-drop, step the target back toward minimum so one
