@@ -40,6 +40,11 @@ final class FrameInterpolator {
     private var prevBuffer: CVPixelBuffer?
     private var prevPTS: CMTime = .invalid
     private var errLogCount = 0
+    // Backpressure: number of submitted frames not yet finished. When >1 we are falling
+    // behind real time, so we skip interpolation to drain the backlog rather than let
+    // latency grow without bound.
+    private let pendingLock = NSLock()
+    private var pending = 0
 
     init(width: Int, height: Int, sourcePixelFormat: OSType) throws {
         guard VTLowLatencyFrameInterpolationConfiguration.isSupported else {
@@ -82,14 +87,21 @@ final class FrameInterpolator {
     }
 
     func submit(_ buffer: CVPixelBuffer, pts: CMTime) {
-        queue.async { [weak self] in self?.process(buffer, pts: pts) }
+        pendingLock.lock(); pending += 1; pendingLock.unlock()
+        queue.async { [weak self] in
+            guard let self else { return }
+            self.pendingLock.lock(); let backlogged = self.pending > 2; self.pendingLock.unlock()
+            self.process(buffer, pts: pts, skipInterp: backlogged)
+            self.pendingLock.lock(); self.pending -= 1; self.pendingLock.unlock()
+        }
     }
 
-    private func process(_ buffer: CVPixelBuffer, pts: CMTime) {
+    private func process(_ buffer: CVPixelBuffer, pts: CMTime, skipInterp: Bool) {
         defer { prevBuffer = buffer; prevPTS = pts }
 
-        guard let prev = prevBuffer, prevPTS.isValid, let pool = pool else {
-            onFrame?(buffer, pts)   // first frame: nothing to interpolate from
+        guard !skipInterp, let prev = prevBuffer, prevPTS.isValid, let pool = pool else {
+            // First frame, or falling behind: pass the real frame straight through.
+            onFrame?(buffer, pts)
             return
         }
 

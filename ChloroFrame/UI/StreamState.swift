@@ -30,6 +30,10 @@ final class StreamState {
     var appName:       String = ""
     var codecInfo:     String = ""
     var disconnectError: Error?
+    // Rate the renderer presents at: the negotiated fps normally, or the frame-gen target
+    // (2x source, capped at display refresh) when frame generation is active. Drives the
+    // display link so synthesized frames are actually shown rather than deadline-dropped.
+    var presentFps:    Int = 120
 
     private var cancelClosure: (() async -> Void)?
 

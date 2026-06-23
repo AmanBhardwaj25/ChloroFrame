@@ -7,6 +7,7 @@
 
 import SwiftUI
 import CoreVideo
+import CoreMedia
 
 // MARK: - Connection flow state machine
 // StreamError lives in StreamState.swift so ContentView can reference it too.
@@ -37,6 +38,8 @@ struct HostConnectionView: View {
     @AppStorage("streamOverrideBitrate")     private var overrideBitrate     = 0    // kbps
     @AppStorage("localUpscaling")            private var localUpscaling      = false
     @AppStorage("frameGeneration")           private var frameGeneration     = false
+    @AppStorage("frameGenHDR")               private var frameGenHDR         = false
+    @AppStorage("absoluteMouseMode")         private var absoluteMouseMode   = false
 
     @State private var client: SunshineHTTPClient
     @State private var phase: FlowPhase = .connecting
@@ -176,7 +179,9 @@ struct HostConnectionView: View {
                         overrideFPS:        $overrideFPS,
                         overrideBitrate:    $overrideBitrate,
                         localUpscaling:     $localUpscaling,
-                        frameGeneration:    $frameGeneration
+                        frameGeneration:    $frameGeneration,
+                        frameGenHDR:        $frameGenHDR,
+                        absoluteMouseMode:  $absoluteMouseMode
                     )
                 }
 
@@ -372,7 +377,6 @@ struct HostConnectionView: View {
             let ih = InputHandler(transport: t)
             let ct = ControllerTranslator(transport: t)
             r.stats = t.stats
-            r.setStreamFps(config.fps)
 
             // Local spatial upscaling via MetalFX, inside the renderer: when enabled and the
             // drawable is larger than the decoded frame (always on Retina), the renderer
@@ -383,35 +387,61 @@ struct HostConnectionView: View {
             t.stats.setReconstruction(requested: localUpscaling, active: false,
                                       outW: 0, outH: 0, reason: localUpscaling ? "starting" : "")
 
-            // Optional temporal frame generation at the decode->enqueue seam. Synthesizes a
-            // midpoint frame between each decoded pair (2x), doubling the rate fed to the
-            // renderer. Adds ~one source-frame interval of latency. Falls back to the direct
-            // path (reason reported to the HUD) when unsupported. The interpolator is captured
-            // by the closures, so it lives for the stream.
-            var interpolator: FrameInterpolator? = nil
-            if frameGeneration {
-                let srcFormat: OSType = enableHdr
-                    ? kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange
-                    : kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
+            // Optional temporal frame generation at the decode->enqueue seam: synthesize a
+            // midpoint frame between each decoded pair (2x). Two paths, picked by stream
+            // HDR-ness: VTLowLatencyFrameInterpolation for SDR (NV12), and the experimental
+            // optical-flow generator for HDR (P010, which VT rejects). Both add ~one
+            // source-frame interval of latency and report state to the HUD. The generator is
+            // captured by the closures, so it lives for the stream.
+            var fgSubmit: ((CVPixelBuffer, CMTime) -> Void)? = nil
+            var fgReset:  (() -> Void)? = nil
+
+            if enableHdr && frameGenHDR {
                 do {
-                    interpolator = try FrameInterpolator(width: config.width, height: config.height,
-                                                         sourcePixelFormat: srcFormat)
+                    let gen = try HDRFrameGenerator(width: config.width, height: config.height)
+                    gen.onFrame = { pixelBuffer, pts in r.enqueueFrame(pixelBuffer, pts: pts) }
+                    fgSubmit = { pixelBuffer, pts in gen.submit(pixelBuffer, pts: pts) }
+                    fgReset  = { gen.reset() }
+                    t.stats.setFrameGen(requested: true, active: true, reason: "HDR optical flow")
+                } catch {
+                    t.stats.setFrameGen(requested: true, active: false, reason: error.localizedDescription)
+                }
+            } else if !enableHdr && frameGeneration {
+                do {
+                    let interp = try FrameInterpolator(width: config.width, height: config.height,
+                                                       sourcePixelFormat: kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange)
+                    interp.onFrame = { pixelBuffer, pts in r.enqueueFrame(pixelBuffer, pts: pts) }
+                    fgSubmit = { pixelBuffer, pts in interp.submit(pixelBuffer, pts: pts) }
+                    fgReset  = { interp.reset() }
                     t.stats.setFrameGen(requested: true, active: true, reason: "")
                 } catch {
                     t.stats.setFrameGen(requested: true, active: false, reason: error.localizedDescription)
                 }
             } else {
-                t.stats.setFrameGen(requested: false, active: false, reason: "")
+                // A toggle may be on but not applicable to this stream (SDR toggle on an HDR
+                // stream, or vice versa).
+                let mismatched = (frameGeneration && enableHdr) || (frameGenHDR && !enableHdr)
+                t.stats.setFrameGen(requested: mismatched, active: false,
+                                    reason: mismatched ? "n/a for this stream" : "")
             }
 
-            if let interp = interpolator {
-                interp.onFrame = { pixelBuffer, pts in r.enqueueFrame(pixelBuffer, pts: pts) }
-                t.onVideoTexture = { pixelBuffer, pts in interp.submit(pixelBuffer, pts: pts) }
-                t.onClockReset = { interp.reset(); r.resetClockAnchor() }
+            if let fgSubmit {
+                t.onVideoTexture = { pixelBuffer, pts in fgSubmit(pixelBuffer, pts) }
+                t.onClockReset = { fgReset?(); r.resetClockAnchor() }
             } else {
                 t.onVideoTexture = { pixelBuffer, pts in r.enqueueFrame(pixelBuffer, pts: pts) }
                 t.onClockReset = { r.resetClockAnchor() }
             }
+
+            // Present rate: when frame gen is active we emit 2x frames, so the renderer and the
+            // display link must run at 2x the negotiated fps (capped at the display's refresh)
+            // or the synthesized frames are just deadline-dropped. Otherwise present at the
+            // negotiated rate.
+            let presentFps = fgSubmit != nil
+                ? min(config.fps * 2, DisplayConfig.detect().fps)
+                : config.fps
+            r.setStreamFps(presentFps)
+            streamState.presentFps = presentFps
             t.onENetDisconnect = {
                 Task { @MainActor in
                     streamState.didDisconnect(error: StreamError.controlDisconnected)
@@ -468,6 +498,8 @@ private struct StreamSettingsPopover: View {
     @Binding var overrideBitrate: Int
     @Binding var localUpscaling: Bool
     @Binding var frameGeneration: Bool
+    @Binding var frameGenHDR: Bool
+    @Binding var absoluteMouseMode: Bool
 
     // Fetched on appear — owned by the popover so there's no parent-to-child timing race.
     @State private var availableModes: [DisplayResolution] = []
@@ -556,8 +588,15 @@ private struct StreamSettingsPopover: View {
                 Section("Reconstruction (experimental)") {
                     Toggle("Local Upscaling", isOn: $localUpscaling)
                         .help("Upscale the decoded frame to your display's native resolution using MetalFX spatial scaling. Sharper than the default stretch. Works at native resolution and with HDR; no added latency. Requires macOS 26 on Apple Silicon.")
-                    Toggle("Frame Generation", isOn: $frameGeneration)
-                        .help("Synthesize an intermediate frame between each decoded pair (2x) to smooth a low frame rate. Adds about one source-frame interval of latency. SDR only: the interpolation API does not accept HDR (P010) input. Best when the stream is a steady moderate fps. Requires macOS 26 on Apple Silicon.")
+                    Toggle("Frame Generation (SDR)", isOn: $frameGeneration)
+                        .help("Synthesize an intermediate frame between each decoded pair (2x) via VideoToolbox to smooth a low frame rate. Adds about one source-frame interval of latency. Used only for SDR streams: the API does not accept HDR (P010). Requires macOS 26 on Apple Silicon.")
+                    Toggle("Frame Generation — HDR (optical flow, experimental)", isOn: $frameGenHDR)
+                        .help("Experimental optical-flow frame generation for HDR streams, done in Metal on the linear HDR image since VideoToolbox interpolation rejects P010. Expect artifacts on fast motion and scene cuts. Used only for HDR streams.")
+                }
+
+                Section("Mouse") {
+                    Toggle("Absolute mouse (desktop)", isOn: $absoluteMouseMode)
+                        .help("Moonlight-style desktop mouse: the cursor is not captured/locked and its absolute position is sent to the host, which feels more natural for desktop use. The local cursor is hidden so only the host cursor (in the stream) shows. Default off uses relative + cursor lock, better for games. Toggle live with ⌃⌥⌘A.")
                 }
 
                 Section {

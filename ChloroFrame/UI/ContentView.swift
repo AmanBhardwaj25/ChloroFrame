@@ -75,6 +75,7 @@ struct ContentView: View {
     @State private var showControlsHelp = false
     @State private var controlsHideWork: DispatchWorkItem?
     @State private var awdlMonitor    = AWDLStatusMonitor()
+    @AppStorage("absoluteMouseMode") private var absoluteMouseMode = false
     @Environment(\.openSettings) private var openSettings
 
     var body: some View {
@@ -131,11 +132,13 @@ struct ContentView: View {
             if let r = streamState.renderer {
                 MetalVideoView(
                     renderer: r,
-                    streamFps: streamState.stats?.requestedFps ?? 120,
+                    streamFps: streamState.presentFps,
                     inputHandler: streamState.inputHandler,
                     onDisconnect: { streamState.stop() },
                     onToggleStats: { showStats.toggle() },
-                    onShowControls: { revealControlsOverlay() }
+                    onShowControls: { revealControlsOverlay() },
+                    absoluteMouseMode: absoluteMouseMode,
+                    onToggleMouseMode: { absoluteMouseMode.toggle() }
                 )
             } else {
                 Color.black

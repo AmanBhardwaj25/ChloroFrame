@@ -312,6 +312,28 @@ final class InputHandler {
         }
     }
 
+    /// Absolute mouse position, in the displayed video rect's coordinate space (origin top-left).
+    /// The host scales x/y by refW/refH to its own screen. Matches moonlight-qt's absolute mode
+    /// (LiSendMousePositionEvent).
+    ///
+    /// NV_ABS_MOUSE_MOVE_PACKET: BE32(14) | LE32(0x05) | x BE16 | y BE16 | unused BE16 |
+    ///   (refW-1) BE16 | (refH-1) BE16. The -1 on the reference dims mirrors moonlight-common-c's
+    ///   workaround for a server-side rounding error at the far edges.
+    func handleMouseAbsolute(x: Int, y: Int, refW: Int, refH: Int) {
+        guard refW > 1, refH > 1 else { return }
+        let cx = max(0, min(refW, x))
+        let cy = max(0, min(refH, y))
+        var p = [UInt8]()
+        p += be32(14)
+        p += le32(0x0000_0005)
+        p += be16(UInt16(clamping: cx))
+        p += be16(UInt16(clamping: cy))
+        p += be16(0)
+        p += be16(UInt16(clamping: refW - 1))
+        p += be16(UInt16(clamping: refH - 1))
+        send(p, channel: 0x03, label: "mouseAbs x=\(cx) y=\(cy) ref=\(refW)x\(refH)")
+    }
+
     // Use the pre-acceleration HID counts from the underlying CGEvent when available.
     // Falling back to event.deltaX/Y (which carry macOS pointer acceleration) is safe —
     // raw fields are absent on some VM environments and synthesised events.

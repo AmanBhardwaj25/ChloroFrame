@@ -122,3 +122,37 @@ fragment float4 fragmentShaderYUVHDR(VertexOut in [[stage_in]],
     // so EDR 1.0 = 100 nits, EDR 100.0 = 10 000 nits (display clips at its own peak).
     return float4(linear / 0.01, 1.0);
 }
+
+// MARK: - HDR optical-flow frame generation (prototype)
+//
+// Synthesizes a midpoint frame between two P010 frames by warping each toward the middle
+// along an optical-flow field and blending. Output is P010 again, so the existing HDR
+// render path displays it unchanged. The flow texture holds the A->B displacement in
+// flow-image pixels; dividing by the flow texture size gives a resolution-independent
+// [0,1] displacement that applies to both the full-res Y plane and the half-res UV plane.
+//
+// Prototype compromise: blends in the stored (PQ-encoded YUV) domain rather than linear
+// light. Cheap and good enough for small motion; highlights blended across large motion
+// will be slightly off. Reuses `vertexShader`.
+
+fragment float4 fragmentWarpBlendY(VertexOut in [[stage_in]],
+                                   texture2d<float> yA   [[texture(0)]],
+                                   texture2d<float> yB   [[texture(1)]],
+                                   texture2d<float> flow [[texture(2)]]) {
+    constexpr sampler s(mag_filter::linear, min_filter::linear);
+    float2 fn = flow.sample(s, in.texCoord).rg / float2(flow.get_width(), flow.get_height());
+    float a = yA.sample(s, in.texCoord - 0.5 * fn).r;
+    float b = yB.sample(s, in.texCoord + 0.5 * fn).r;
+    return float4(0.5 * (a + b), 0.0, 0.0, 1.0);
+}
+
+fragment float4 fragmentWarpBlendUV(VertexOut in [[stage_in]],
+                                    texture2d<float> uvA  [[texture(0)]],
+                                    texture2d<float> uvB  [[texture(1)]],
+                                    texture2d<float> flow [[texture(2)]]) {
+    constexpr sampler s(mag_filter::linear, min_filter::linear);
+    float2 fn = flow.sample(s, in.texCoord).rg / float2(flow.get_width(), flow.get_height());
+    float2 a = uvA.sample(s, in.texCoord - 0.5 * fn).rg;
+    float2 b = uvB.sample(s, in.texCoord + 0.5 * fn).rg;
+    return float4(0.5 * (a + b), 0.0, 1.0);
+}

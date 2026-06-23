@@ -22,6 +22,8 @@ struct MetalVideoView: NSViewRepresentable {
     var onDisconnect: (() -> Void)?
     var onToggleStats: (() -> Void)?
     var onShowControls: (() -> Void)?
+    var absoluteMouseMode: Bool = false
+    var onToggleMouseMode: (() -> Void)?
 
     func makeNSView(context: Context) -> InputCaptureMetalView {
         let view = InputCaptureMetalView()
@@ -29,7 +31,9 @@ struct MetalVideoView: NSViewRepresentable {
         view.onDisconnect = onDisconnect
         view.onToggleStats = onToggleStats
         view.onShowControls = onShowControls
+        view.onToggleMouseMode = onToggleMouseMode
         view.streamFps = streamFps
+        view.absoluteMouseMode = absoluteMouseMode
         view.renderer = renderer
         return view
     }
@@ -41,7 +45,9 @@ struct MetalVideoView: NSViewRepresentable {
         nsView.onDisconnect = onDisconnect
         nsView.onToggleStats = onToggleStats
         nsView.onShowControls = onShowControls
+        nsView.onToggleMouseMode = onToggleMouseMode
         nsView.streamFps = streamFps
+        nsView.absoluteMouseMode = absoluteMouseMode
     }
 }
 
@@ -63,6 +69,18 @@ final class InputCaptureMetalView: NSView {
     var onDisconnect: (() -> Void)?
     var onToggleStats: (() -> Void)?
     var onShowControls: (() -> Void)?
+    var onToggleMouseMode: (() -> Void)?
+
+    /// Absolute (Moonlight-style desktop) mouse mode. When true the cursor is NOT captured/locked;
+    /// the macOS cursor moves freely and its position is sent to the host as absolute coordinates,
+    /// while the local cursor is hidden over the video so only the host cursor (drawn into the
+    /// stream) shows. When false, the existing relative + cursor-lock behaviour applies (games).
+    var absoluteMouseMode: Bool = false {
+        didSet { if absoluteMouseMode != oldValue { applyMouseMode() } }
+    }
+    // True while the system cursor is hidden for absolute mode (balances hide/unhide).
+    private var absCursorHidden = false
+
     // Discovery gesture: holding ⌃⌥⌘ alone (no other key) for 2 s reveals the controls overlay.
     // Scheduled when the trio completes; cancelled if the trio breaks or any key is pressed
     // (a key press means the user is invoking a hotkey, not asking for the list).
@@ -221,6 +239,7 @@ final class InputCaptureMetalView: NSView {
             stopRenderLoop()
             restoreCursorLockOnActivate = false
             releaseCursor()
+            absShowCursor()
             NotificationCenter.default.removeObserver(
                 self, name: NSApplication.willResignActiveNotification, object: nil
             )
@@ -234,10 +253,13 @@ final class InputCaptureMetalView: NSView {
         restoreCursorLockOnActivate = cursorLocked
         inputHandler?.releaseAll()
         releaseCursor()
+        absShowCursor()   // reveal the real cursor while we're in the background
     }
 
     @objc private func appDidBecomeActive() {
-        guard restoreCursorLockOnActivate, window?.isKeyWindow == true else { return }
+        guard window?.isKeyWindow == true else { return }
+        if absoluteMouseMode { absHideCursor(); return }
+        guard restoreCursorLockOnActivate else { return }
         restoreCursorLockOnActivate = false
         lockCursor()
     }
@@ -248,9 +270,11 @@ final class InputCaptureMetalView: NSView {
     // never becomes key (e.g. launched in the background) — a click still locks then.
     private func autoCaptureCursor(attempt: Int = 0) {
         DispatchQueue.main.async { [weak self] in
-            guard let self, self.window != nil, !self.cursorLocked else { return }
+            guard let self, self.window != nil else { return }
             if self.window?.isKeyWindow == true {
-                self.lockCursor()
+                // Absolute mode doesn't lock; it just hides the local cursor over the video.
+                if self.absoluteMouseMode { self.absHideCursor() }
+                else if !self.cursorLocked { self.lockCursor() }
             } else if attempt < 20 {
                 self.autoCaptureCursor(attempt: attempt + 1)
             }
@@ -261,6 +285,7 @@ final class InputCaptureMetalView: NSView {
         if newWindow == nil {
             inputHandler?.releaseAll()
             releaseCursor()
+            absShowCursor()
         }
     }
 
@@ -273,10 +298,53 @@ final class InputCaptureMetalView: NSView {
         for area in trackingAreas { removeTrackingArea(area) }
         addTrackingArea(NSTrackingArea(
             rect: bounds,
-            options: [.activeInKeyWindow, .mouseMoved, .inVisibleRect],
+            options: [.activeInKeyWindow, .mouseMoved, .mouseEnteredAndExited, .inVisibleRect],
             owner: self,
             userInfo: nil
         ))
+    }
+
+    // MARK: - Absolute mouse mode (Moonlight-style)
+
+    /// Switch between relative-lock and absolute modes. Clears the other mode's cursor state.
+    private func applyMouseMode() {
+        if absoluteMouseMode {
+            releaseCursor()                 // drop any relative capture/lock
+            if window?.isKeyWindow == true { absHideCursor() }
+        } else {
+            absShowCursor()                 // back to relative: real cursor visible until a click locks it
+        }
+    }
+
+    private func absHideCursor() {
+        guard absoluteMouseMode, !absCursorHidden else { return }
+        absCursorHidden = true
+        NSCursor.hide()
+    }
+
+    private func absShowCursor() {
+        guard absCursorHidden else { return }
+        absCursorHidden = false
+        NSCursor.unhide()
+    }
+
+    /// Sends the cursor's position within the view to the host as absolute coordinates.
+    /// Origin is flipped to top-left (AppKit view space is bottom-left).
+    private func sendAbsoluteMouse(_ event: NSEvent) {
+        let p = convert(event.locationInWindow, from: nil)
+        let w = bounds.width, h = bounds.height
+        guard w > 1, h > 1 else { return }
+        let x = Int(p.x.rounded())
+        let y = Int((h - p.y).rounded())   // flip Y to top-left origin
+        inputHandler?.handleMouseAbsolute(x: x, y: y, refW: Int(w.rounded()), refH: Int(h.rounded()))
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        if absoluteMouseMode { absHideCursor() }
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        absShowCursor()
     }
 
     // MARK: - Cursor lock/unlock
@@ -341,6 +409,11 @@ final class InputCaptureMetalView: NSView {
             if cursorLocked { releaseCursor() } else { lockCursor() }
             return
         }
+        // Ctrl+Option+Command+A: toggle absolute (desktop) mouse mode. (keyCode 0x00 = A)
+        if event.keyCode == 0x00 && mods == [.control, .option, .command] {
+            onToggleMouseMode?()
+            return
+        }
         // Ctrl+Option+Command+S: toggle stream stats HUD (keyCode 0x01 = S)
         if event.keyCode == 0x01 && mods == [.control, .option, .command] {
             onToggleStats?()
@@ -396,21 +469,25 @@ final class InputCaptureMetalView: NSView {
     // The local monitor installed in lockCursor() handles all movement events in that state.
     // These overrides cover the unlocked state (tracking area + responder chain delivery).
     override func mouseMoved(with event: NSEvent) {
+        if absoluteMouseMode { sendAbsoluteMouse(event); return }
         guard !cursorLocked else { return }
         inputHandler?.handleMouseMoved(event)
     }
 
     override func mouseDragged(with event: NSEvent) {
+        if absoluteMouseMode { sendAbsoluteMouse(event); return }
         guard !cursorLocked else { return }
         inputHandler?.handleMouseMoved(event)
     }
 
     override func rightMouseDragged(with event: NSEvent) {
+        if absoluteMouseMode { sendAbsoluteMouse(event); return }
         guard !cursorLocked else { return }
         inputHandler?.handleMouseMoved(event)
     }
 
     override func otherMouseDragged(with event: NSEvent) {
+        if absoluteMouseMode { sendAbsoluteMouse(event); return }
         guard !cursorLocked else { return }
         inputHandler?.handleMouseMoved(event)
     }
@@ -418,6 +495,13 @@ final class InputCaptureMetalView: NSView {
     // MARK: - Mouse buttons
 
     override func mouseDown(with event: NSEvent) {
+        // Absolute mode: no cursor lock. Send the position first so a click registers at the
+        // cursor's current spot even if no move event preceded it.
+        if absoluteMouseMode {
+            sendAbsoluteMouse(event)
+            inputHandler?.handleMouseDown(event)
+            return
+        }
         if !cursorLocked { lockCursor() }
         inputHandler?.handleMouseDown(event)
     }

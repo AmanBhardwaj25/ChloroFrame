@@ -67,7 +67,7 @@ struct StreamStatsHUD: View {
                 row("Upscaling", s.reconReason.isEmpty ? "fell back" : "fell back · \(s.reconReason)")
             }
             if s.fgActive {
-                row("Frame Gen", "2× interpolation")
+                row("Frame Gen", s.fgReason.isEmpty ? "2× interpolation" : "2× · \(s.fgReason)")
             } else if s.fgRequested {
                 row("Frame Gen", s.fgReason.isEmpty ? "fell back" : "fell back · \(s.fgReason)")
             }
