@@ -58,9 +58,12 @@ struct DisplayConfig {
         return DisplayConfig(width: w, height: h, fps: fps, hdr: hdr)
     }
 
-    /// Physical pixel resolution of the active display (logical points × backing scale),
-    /// even-aligned. This is what the renderer's drawable upscales to, so it's the "100%"
-    /// reference for the upscaling percentage: source = percent% of this.
+    /// Physical pixel resolution of the active display's usable area (logical points × backing
+    /// scale), even-aligned. The notch / menu-bar row is excluded via safeAreaInsets so this
+    /// matches the renderer's drawable aspect ratio: a fullscreen app draws below the notch, so
+    /// the drawable is e.g. 3024×1898, not the full 3024×1964. Using the full frame here gave the
+    /// upscale source the wrong aspect ratio (stretched picture). This is the "100%" reference
+    /// for the upscaling percentage: source = percent% of this.
     @MainActor
     static func physicalPixelSize() -> (width: Int, height: Int) {
         let screen = NSApp.keyWindow?.screen
@@ -68,8 +71,11 @@ struct DisplayConfig {
                   ?? NSScreen.main
                   ?? NSScreen.screens.first!
         let scale = screen.backingScaleFactor
-        let w = Int((screen.frame.width  * scale).rounded()) & ~1
-        let h = Int((screen.frame.height * scale).rounded()) & ~1
+        let insets = screen.safeAreaInsets          // .top = notch/menu-bar row on built-in displays
+        let usableW = screen.frame.width  - insets.left - insets.right
+        let usableH = screen.frame.height - insets.top  - insets.bottom
+        let w = Int((usableW * scale).rounded()) & ~1
+        let h = Int((usableH * scale).rounded()) & ~1
         return (w, h)
     }
 

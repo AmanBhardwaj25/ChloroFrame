@@ -36,7 +36,11 @@ final class HDRFrameGenerator {
     private var textureCache: CVMetalTextureCache?
     private let warpYPSO: MTLRenderPipelineState
     private let warpUVPSO: MTLRenderPipelineState
+    private let proxyPSO: MTLRenderPipelineState   // downscales the Y plane for optical flow
     private var pool: CVPixelBufferPool?
+    private var proxyPool: CVPixelBufferPool?       // small single-channel luma proxies
+    private let proxyW: Int
+    private let proxyH: Int
     private let queue = DispatchQueue(label: "chloroframe.hdr-framegen", qos: .userInteractive)
 
     private var prevBuffer: CVPixelBuffer?
@@ -58,6 +62,11 @@ final class HDRFrameGenerator {
         let n = max(1, min(3, interpolatedFrames))
         self.phaseValues = (1...n).map { Double($0) / Double(n + 1) }
 
+        // Optical flow runs on a ~1/4-scale luma proxy so Vision is fast enough for real time;
+        // the warp normalizes flow by its own dimensions, so a coarse flow field is still valid.
+        self.proxyW = max(160, (width  / 4)) & ~1
+        self.proxyH = max(90,  (height / 4)) & ~1
+
         guard let device = MTLCreateSystemDefaultDevice(),
               let commandQueue = device.makeCommandQueue() else {
             throw InterpolatorError.message("no Metal device")
@@ -77,6 +86,7 @@ final class HDRFrameGenerator {
         }
         self.warpYPSO  = try pso("fragmentWarpBlendY",  .r16Unorm)
         self.warpUVPSO = try pso("fragmentWarpBlendUV", .rg16Unorm)
+        self.proxyPSO  = try pso("fragmentShader",      .r8Unorm)   // samples Y, writes downscaled luma
 
         var cache: CVMetalTextureCache?
         guard CVMetalTextureCacheCreate(kCFAllocatorDefault, nil, device, nil, &cache) == kCVReturnSuccess,
@@ -99,7 +109,23 @@ final class HDRFrameGenerator {
             throw InterpolatorError.message("P010 pool alloc failed")
         }
         self.pool = pool
-        Swift.print("[ChloroFrame][hdr-fg] optical-flow frame generation \(width)x\(height) \(n + 1)x")
+
+        let proxyAttrs: [String: Any] = [
+            kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_OneComponent8,
+            kCVPixelBufferWidthKey as String: proxyW,
+            kCVPixelBufferHeightKey as String: proxyH,
+            kCVPixelBufferMetalCompatibilityKey as String: true,
+            kCVPixelBufferIOSurfacePropertiesKey as String: [String: Any](),
+        ]
+        var proxyPool: CVPixelBufferPool?
+        guard CVPixelBufferPoolCreate(kCFAllocatorDefault, poolAttrs as CFDictionary,
+                                      proxyAttrs as CFDictionary, &proxyPool) == kCVReturnSuccess,
+              let proxyPool else {
+            throw InterpolatorError.message("proxy pool alloc failed")
+        }
+        self.proxyPool = proxyPool
+
+        Swift.print("[ChloroFrame][hdr-fg] optical-flow frame generation \(width)x\(height) \(n + 1)x (flow @ \(proxyW)x\(proxyH))")
     }
 
     deinit {
@@ -147,24 +173,28 @@ final class HDRFrameGenerator {
     private func makeFrames(prev: CVPixelBuffer, cur: CVPixelBuffer) -> [(CVPixelBuffer, Double)] {
         guard let cache = textureCache, let pool = pool else { return [] }
 
-        // Optical flow prev -> cur (Vision: handler image = prev, target = cur).
-        guard let flowBuffer = opticalFlow(from: prev, to: cur) else { return [] }
-
         let w = CVPixelBufferGetWidth(cur), h = CVPixelBufferGetHeight(cur)
         let read: [String: Any] = [kCVMetalTextureUsage as String: MTLTextureUsage.shaderRead.rawValue]
         let rt:   [String: Any] = [kCVMetalTextureUsage as String: MTLTextureUsage([.renderTarget, .shaderRead]).rawValue]
 
-        // Source textures + flow, computed once and reused for every phase. Keep CVMetalTexture
-        // refs alive until the GPU finishes (waitUntilCompleted below).
+        // Source textures (reused for every phase). Keep CVMetalTexture refs alive until the GPU
+        // finishes (waitUntilCompleted below).
         guard let yAref  = cvTexture(prev, .r16Unorm,  w,     h,     0, read, cache),
               let uvAref = cvTexture(prev, .rg16Unorm, w / 2, h / 2, 1, read, cache),
               let yBref  = cvTexture(cur,  .r16Unorm,  w,     h,     0, read, cache),
               let uvBref = cvTexture(cur,  .rg16Unorm, w / 2, h / 2, 1, read, cache),
-              let flowRef = cvTextureFlow(flowBuffer, cache),
               let yA = CVMetalTextureGetTexture(yAref), let uvA = CVMetalTextureGetTexture(uvAref),
-              let yB = CVMetalTextureGetTexture(yBref), let uvB = CVMetalTextureGetTexture(uvBref),
-              let flow = CVMetalTextureGetTexture(flowRef) else {
+              let yB = CVMetalTextureGetTexture(yBref), let uvB = CVMetalTextureGetTexture(uvBref) else {
             logErr("texture creation failed")
+            return []
+        }
+
+        // Optical flow on downscaled luma proxies (Vision: handler = prev, target = cur).
+        guard let proxyA = renderProxy(from: yA, cache: cache),
+              let proxyB = renderProxy(from: yB, cache: cache),
+              let flowBuffer = opticalFlow(from: proxyA, to: proxyB),
+              let flowRef = cvTextureFlow(flowBuffer, cache),
+              let flow = CVMetalTextureGetTexture(flowRef) else {
             return []
         }
 
@@ -209,6 +239,31 @@ final class HDRFrameGenerator {
         enc.setFragmentBytes(&ph, length: MemoryLayout<Float>.size, index: 0)
         enc.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
         enc.endEncoding()
+    }
+
+    /// Downscales a Y-plane texture into a small single-channel luma CVPixelBuffer for Vision.
+    private func renderProxy(from yTex: MTLTexture, cache: CVMetalTextureCache) -> CVPixelBuffer? {
+        guard let proxyPool else { return nil }
+        var buf: CVPixelBuffer?
+        guard CVPixelBufferPoolCreatePixelBuffer(kCFAllocatorDefault, proxyPool, &buf) == kCVReturnSuccess,
+              let buf else { return nil }
+        let rt: [String: Any] = [kCVMetalTextureUsage as String: MTLTextureUsage([.renderTarget, .shaderRead]).rawValue]
+        guard let ref = cvTexture(buf, .r8Unorm, proxyW, proxyH, 0, rt, cache),
+              let tex = CVMetalTextureGetTexture(ref),
+              let cb = commandQueue.makeCommandBuffer() else { return nil }
+        let rpd = MTLRenderPassDescriptor()
+        rpd.colorAttachments[0].texture = tex
+        rpd.colorAttachments[0].loadAction = .dontCare
+        rpd.colorAttachments[0].storeAction = .store
+        guard let enc = cb.makeRenderCommandEncoder(descriptor: rpd) else { return nil }
+        enc.setRenderPipelineState(proxyPSO)
+        enc.setFragmentTexture(yTex, index: 0)
+        enc.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
+        enc.endEncoding()
+        cb.commit()
+        cb.waitUntilCompleted()
+        _ = ref
+        return buf
     }
 
     private func opticalFlow(from a: CVPixelBuffer, to b: CVPixelBuffer) -> CVPixelBuffer? {
