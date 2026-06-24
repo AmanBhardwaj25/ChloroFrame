@@ -1,0 +1,49 @@
+ChloroFrame
+Copyright (C) 2026 Aman Bhardwaj
+
+This program is free software: you can redistribute it and/or modify it under
+the terms of the GNU General Public License as published by the Free Software
+Foundation, either version 3 of the License, or (at your option) any later
+version. See the LICENSE file for the full text.
+
+This program is distributed in the hope that it will be useful, but WITHOUT ANY
+WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A
+PARTICULAR PURPOSE. See the GNU General Public License for more details.
+
+
+Third-party code and attribution
+=================================
+
+Moonlight / moonlight-common-c (GPLv3)
+--------------------------------------
+Much of ChloroFrame's core streaming and protocol code is a direct Swift
+translation or adaptation of moonlight-common-c (RTSP negotiation, RTP packet
+handling, FEC behavior, ENet control messages, codec setup, and many protocol
+details). moonlight-common-c is part of the Moonlight Game Streaming project and
+is licensed under the GNU General Public License v3. Because ChloroFrame is a
+derivative work of that code, ChloroFrame as a whole is also licensed under the
+GNU General Public License v3.
+
+  - moonlight-common-c: https://github.com/moonlight-stream/moonlight-common-c
+  - Moonlight Game Streaming Project, Cameron Gutman and contributors
+  - Copyright (C) Moonlight Game Streaming Project contributors
+
+Thank you to the Moonlight and moonlight-qt developers for doing the difficult
+protocol and compatibility work in public.
+
+nanors (MIT)
+------------
+The Reed-Solomon FEC code in ChloroFrame/Network/FEC/ (both the C implementation
+and its Swift translation) is derived from the scalar (OBLAS_TINY) path of
+nanors by Joseph Calderon, used under the MIT License. The full MIT license
+notice is included in nanors_impl.c.
+
+  - nanors: https://github.com/sleepybishop/nanors
+
+Opus
+----
+The vendored Opus headers and the static libopus.a in ChloroFrame/Vendor/opus
+remain under the upstream Opus license (BSD-style). If you distribute binaries,
+include the Opus license notice with your distribution.
+
+  - Opus: https://opus-codec.org/

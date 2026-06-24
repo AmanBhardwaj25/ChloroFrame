@@ -220,7 +220,20 @@ and requirement strings in:
 
 ## License
 
-Project code is released under the MIT License. See `LICENSE`.
+ChloroFrame is licensed under the **GNU General Public License v3 (GPLv3)**.
+See `LICENSE` for the full text and `NOTICE` for attribution.
+
+Much of ChloroFrame's core streaming and protocol code is a direct Swift
+translation or adaptation of [`moonlight-common-c`](https://github.com/moonlight-stream/moonlight-common-c),
+which is part of the Moonlight Game Streaming project and licensed under GPLv3.
+Because ChloroFrame is a derivative work of that code, ChloroFrame as a whole is
+released under GPLv3 as well. Copyright (C) 2026 Aman Bhardwaj and the Moonlight
+Game Streaming Project contributors.
+
+Note: GPLv3 is generally considered incompatible with distribution through
+Apple's App Store / TestFlight (the same constraint that affects other GPL apps,
+e.g. VLC). If you redistribute ChloroFrame through those channels, make sure you
+have the necessary permission from the upstream copyright holders.
 
 Vendored Opus headers and the static `libopus.a` in `ChloroFrame/Vendor/opus`
 remain under the upstream Opus license. If you distribute binaries, include the
@@ -229,5 +242,5 @@ Opus license notice with your distribution.
 The Reed-Solomon FEC code in `ChloroFrame/Network/FEC/` (both the C
 implementation and its Swift translation) is derived from the scalar
 (OBLAS_TINY) path of [nanors](https://github.com/sleepybishop/nanors) by
-Joseph Calderon, used under the MIT License. The full license notice is
-included in `nanors_impl.c`.
+Joseph Calderon, used under the MIT License (GPL-compatible). The full license
+notice is included in `nanors_impl.c`.
