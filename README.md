@@ -129,9 +129,9 @@ Known gaps:
     and pen input are not implemented.
   - Config files are JSON in ~/Library/Application Support/ChloroFrame/Controllers; the schema
     is still changing during alpha, so configs may need to be recreated after updates.
-- The stream is fullscreen-only for now: it auto-enters fullscreen on connect and exits on
-  disconnect. There is no windowed mode yet, and the "Toggle Full Screen" menu item (⌘⌃F) is
-  currently a non-functional no-op.
+- The stream auto-enters fullscreen on connect and exits on disconnect. The "Toggle Full Screen"
+  menu item (⌘⌃F) now works mid-session, toggling to a windowed view and back (the renderer
+  tracks the view's drawable size, so upscaling/aspect adapt to the window).
 - Bonjour/mDNS host discovery is still a placeholder.
 
 ## Controller Support

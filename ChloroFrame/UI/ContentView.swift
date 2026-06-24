@@ -121,6 +121,13 @@ struct ContentView: View {
                 if !active && isFS  { window.toggleFullScreen(nil) }
             }
         }
+        // ⌘⌃F (Stream ▸ Toggle Full Screen) posts this; without a handler the menu item was a
+        // no-op. Toggling out of fullscreen mid-stream gives a windowed session (the renderer
+        // tracks the view's drawable size, so it adapts).
+        .onReceive(NotificationCenter.default.publisher(for: .toggleFullScreen)) { _ in
+            guard let window = NSApp.windows.first(where: { !$0.isSheet && !$0.isMiniaturized }) else { return }
+            window.toggleFullScreen(nil)
+        }
     }
 
     // MARK: - Streaming view (replaces host list when a session is active)
