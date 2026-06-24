@@ -114,25 +114,74 @@ final class TVMetalUIView: UIView {
 struct TVStreamSurface: UIViewControllerRepresentable {
     let renderer: MetalVideoRenderer
     var streamFps: Int
+    var transport: StreamTransport?
     var onExit: () -> Void
+    var onMenu: () -> Void
+    /// When true (the nav overlay is up), focus interaction is re-enabled so the remote can drive
+    /// the overlay, and the remote-as-mouse handling pauses.
+    var overlayActive: Bool
 
     func makeUIViewController(context: Context) -> TVStreamViewController {
         let vc = TVStreamViewController()
         vc.metalView.renderer = renderer
         vc.metalView.streamFps = streamFps
+        vc.remoteInput = TVRemoteInput(transport: transport)
         vc.onExit = onExit
+        vc.onMenu = onMenu
         return vc
     }
 
     func updateUIViewController(_ vc: TVStreamViewController, context: Context) {
         vc.metalView.streamFps = streamFps
         vc.onExit = onExit
+        vc.onMenu = onMenu
+        vc.setOverlayActive(overlayActive)
     }
 }
 
+/// Siri Remote → host mouse mapping during a stream (a physical game controller, when present,
+/// still passes through as a gamepad via TVControllerTranslator):
+///   - touch surface swipe  → relative pointer move (trackpad feel, with acceleration)
+///   - center click         → left click; long-press → right click
+///   - edge clicks (arrows) → scroll (repeat while held)
+///   - play/pause           → disconnect
+///   - menu                 → exit (becomes the nav overlay in a later step)
+///
+/// UIPress types are physical clicks; the pan gesture is finger movement. That split is what lets
+/// "swipe = pointer" and "edge-click = scroll" coexist (GameController's analog dpad can't separate
+/// them). Focus interaction stays off so none of this drives the tvOS focus engine.
 final class TVStreamViewController: GCEventViewController {
     let metalView = TVMetalUIView()
     var onExit: (() -> Void)?
+    var onMenu: (() -> Void)?
+    var remoteInput: TVRemoteInput?
+    private var inputPaused = false             // overlay up: hand input to the focus engine
+
+    /// Re-enable focus interaction so the remote can navigate the overlay, and pause the
+    /// mouse mapping. Off again restores the host-mouse behavior.
+    func setOverlayActive(_ active: Bool) {
+        inputPaused = active
+        controllerUserInteractionEnabled = active
+        if active {
+            selectTimer?.invalidate(); selectTimer = nil; selectDown = false
+            scrollTimers.values.forEach { $0.invalidate() }; scrollTimers.removeAll()
+            remoteInput?.releaseAll()
+        }
+    }
+
+    private var selectTimer: Timer?
+    private var selectHandled = false           // true once a long-press fired a right click
+    private var selectDown = false              // a center click is currently held
+    private var panTracking = false             // this swipe has passed the start threshold
+    private var scrollTimers: [UIPress.PressType: Timer] = [:]
+
+    private let longPressSeconds = 0.45
+    private let scrollRepeat = 0.05
+    private let scrollStep: Int16 = 28
+    // Pointer feel. pointerSpeed scales finger travel -> pointer travel; moveThreshold is the
+    // minimum swipe before tracking starts so a tap's jitter doesn't move the pointer.
+    private let pointerSpeed: CGFloat = 0.34
+    private let moveThreshold: CGFloat = 14
 
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -142,15 +191,130 @@ final class TVStreamViewController: GCEventViewController {
         metalView.frame = view.bounds
         metalView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
         view.addSubview(metalView)
+
+        let pan = UIPanGestureRecognizer(target: self, action: #selector(handlePan(_:)))
+        view.addGestureRecognizer(pan)
     }
 
-    // With focus interaction off, the Menu button is delivered here instead of dismissing the
-    // view automatically. Use it as the explicit exit.
+    override func viewWillDisappear(_ animated: Bool) {
+        super.viewWillDisappear(animated)
+        selectTimer?.invalidate()
+        scrollTimers.values.forEach { $0.invalidate() }
+        scrollTimers.removeAll()
+        remoteInput?.releaseAll()
+    }
+
+    // MARK: - Pointer
+
+    @objc private func handlePan(_ gr: UIPanGestureRecognizer) {
+        if inputPaused { return }
+        switch gr.state {
+        case .began:
+            gr.setTranslation(.zero, in: view)
+            panTracking = false
+        case .changed:
+            // Freeze while a click is held: the finger always drifts a little during a press
+            // (and a long-press), and that drift was dragging the pointer off small targets.
+            if selectDown { gr.setTranslation(.zero, in: view); return }
+            let t = gr.translation(in: view)
+            // Require a small deliberate swipe before tracking starts, so a tap (which jitters
+            // slightly) doesn't move the pointer at all.
+            if !panTracking {
+                if hypot(t.x, t.y) < moveThreshold { return }
+                panTracking = true
+                gr.setTranslation(.zero, in: view)   // discard the threshold travel (no jump)
+                return
+            }
+            let v = gr.velocity(in: view)
+            // Gentle acceleration: slow moves stay precise, fast swipes still cross the screen.
+            let accel = 1.0 + min(2.0, hypot(v.x, v.y) / 1600.0)
+            remoteInput?.moveRelative(dx: t.x * pointerSpeed * accel, dy: t.y * pointerSpeed * accel)
+            gr.setTranslation(.zero, in: view)
+        default:
+            panTracking = false
+        }
+    }
+
+    // MARK: - Buttons (physical clicks)
+
     override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
-        if presses.contains(where: { $0.type == .menu }) {
-            onExit?()
-        } else {
-            super.pressesBegan(presses, with: event)
+        if inputPaused { super.pressesBegan(presses, with: event); return }
+        var handled = true
+        for press in presses {
+            switch press.type {
+            case .menu:        onMenu?()       // open the nav overlay
+            case .playPause:   onExit?()       // disconnect
+            case .select:      beginSelect()
+            case .upArrow, .downArrow, .leftArrow, .rightArrow:
+                beginScroll(press.type)
+            default:
+                handled = false
+            }
+        }
+        if !handled { super.pressesBegan(presses, with: event) }
+    }
+
+    override func pressesEnded(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        if inputPaused { super.pressesEnded(presses, with: event); return }
+        for press in presses {
+            switch press.type {
+            case .select: endSelect()
+            case .upArrow, .downArrow, .leftArrow, .rightArrow: endScroll(press.type)
+            default: break
+            }
+        }
+        super.pressesEnded(presses, with: event)
+    }
+
+    override func pressesCancelled(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        if inputPaused { super.pressesCancelled(presses, with: event); return }
+        for press in presses {
+            if press.type == .select { endSelect() }
+            else { endScroll(press.type) }
+        }
+        super.pressesCancelled(presses, with: event)
+    }
+
+    private func beginSelect() {
+        selectHandled = false
+        selectDown = true
+        selectTimer?.invalidate()
+        selectTimer = Timer.scheduledTimer(withTimeInterval: longPressSeconds, repeats: false) { [weak self] _ in
+            guard let self else { return }
+            self.selectHandled = true            // long hold → right click
+            self.remoteInput?.click(TVRemoteInput.rightButton)
+        }
+    }
+
+    private func endSelect() {
+        selectTimer?.invalidate(); selectTimer = nil
+        selectDown = false
+        if !selectHandled {                       // released before the hold threshold → left click
+            remoteInput?.click(TVRemoteInput.leftButton)
+        }
+        selectHandled = false
+    }
+
+    private func beginScroll(_ type: UIPress.PressType) {
+        scrollTimers[type]?.invalidate()
+        sendScroll(type)                          // immediate step on press
+        scrollTimers[type] = Timer.scheduledTimer(withTimeInterval: scrollRepeat, repeats: true) { [weak self] _ in
+            self?.sendScroll(type)
+        }
+    }
+
+    private func endScroll(_ type: UIPress.PressType) {
+        scrollTimers[type]?.invalidate()
+        scrollTimers[type] = nil
+    }
+
+    private func sendScroll(_ type: UIPress.PressType) {
+        switch type {
+        case .upArrow:    remoteInput?.scrollVertical(scrollStep)
+        case .downArrow:  remoteInput?.scrollVertical(-scrollStep)
+        case .leftArrow:  remoteInput?.scrollHorizontal(-scrollStep)
+        case .rightArrow: remoteInput?.scrollHorizontal(scrollStep)
+        default: break
         }
     }
 }

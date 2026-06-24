@@ -20,13 +20,15 @@ struct TVHostConnectionView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var client: SunshineHTTPClient
     @State private var phase: Phase = .connecting
+    @State private var showOverlay = false   // Menu-button nav overlay
+    @State private var showStats = false
 
-    // Stream settings (set in TVSettingsView). Codec is derived from HDR: HDR requires HEVC,
-    // otherwise H.264.
-    @AppStorage(TVStreamSettings.resolutionKey) private var resolution = TVStreamSettings.defaultResolution
-    @AppStorage(TVStreamSettings.fpsKey)        private var fps        = TVStreamSettings.defaultFps
-    @AppStorage(TVStreamSettings.bitrateKey)    private var bitrate    = TVStreamSettings.defaultBitrate
-    @AppStorage(TVStreamSettings.hdrKey)        private var hdr        = false
+    // Stream settings (set in TVSettingsView). Codec is user-selected; HDR applies only on HEVC.
+    @AppStorage(TVStreamSettings.resolutionKey) private var resolution    = TVStreamSettings.defaultResolution
+    @AppStorage(TVStreamSettings.fpsKey)        private var fps           = TVStreamSettings.defaultFps
+    @AppStorage(TVStreamSettings.bitrateKey)    private var bitrate       = TVStreamSettings.defaultBitrate
+    @AppStorage(TVStreamSettings.hdrKey)        private var hdr           = false
+    @AppStorage(TVStreamSettings.codecKey)      private var preferredCodec = TVStreamSettings.defaultCodec
 
     enum Phase {
         case connecting
@@ -172,15 +174,36 @@ struct TVHostConnectionView: View {
         // TVStreamSurface disables focus interaction so the controller drives the host (not the
         // tvOS UI) and captures the Menu button as the exit. Teardown runs in onDisappear so it
         // fires on any pop, freeing the video socket for the next connect (the reconnect bug).
-        TVStreamSurface(renderer: renderer, streamFps: fps, onExit: { dismiss() })
-            .ignoresSafeArea()
-            .onDisappear {
-                controller.releaseAll()
-                controller.stop()
-                transport.stop()
-                let appID = app.id
-                Task { await client.cancelApp(id: appID) }
+        ZStack {
+            TVStreamSurface(renderer: renderer, streamFps: fps, transport: transport,
+                            onExit: { dismiss() },
+                            onMenu: { showOverlay = true },
+                            overlayActive: showOverlay)
+                .ignoresSafeArea()
+                .onDisappear {
+                    controller.releaseAll()
+                    controller.stop()
+                    transport.stop()
+                    let appID = app.id
+                    Task { await client.cancelApp(id: appID) }
+                }
+
+            if showStats {
+                TVStreamStatsHUD(collector: transport.stats)
+                    .padding(48)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+                    .allowsHitTesting(false)
             }
+
+            if showOverlay {
+                TVStreamControlsOverlay(
+                    statsOn: showStats,
+                    onToggleStats: { showStats.toggle() },
+                    onDisconnect: { dismiss() },
+                    onClose: { showOverlay = false }
+                )
+            }
+        }
     }
 
     private func failed(_ message: String) -> some View {
@@ -248,15 +271,17 @@ struct TVHostConnectionView: View {
             phase = .failed("Invalid RTSP session URL")
             return
         }
-        // HDR requires HEVC; otherwise H.264 (broadly decodable).
-        let codec: VideoCodec = hdr ? .hevc : .h264
+        // Codec is user-selected; HDR requires HEVC, so it only applies on the HEVC path.
+        let useHevc = (preferredCodec == "h265")
+        let chosenCodec: VideoCodec = useHevc ? .hevc : .h264
+        let useHdr = hdr && useHevc
         let config = StreamConfig(
             width:   display.width,
             height:  display.height,
             fps:     display.fps,
             bitrate: display.bitrate,
-            codec:   codec,
-            hdr:     hdr
+            codec:   chosenCodec,
+            hdr:     useHdr
         )
         do {
             let stream = try await RTSPClient().negotiate(sessionURL: sessionURL, config: config)
@@ -276,6 +301,9 @@ struct TVHostConnectionView: View {
 
             try await transport.start()
             let controller = TVControllerTranslator(transport: transport)
+            // The Siri Remote is handled as a mouse by TVStreamViewController, so don't also
+            // drive the host gamepad with it. A physical extended gamepad still passes through.
+            controller.remoteAsGamepad = false
             controller.start()
             phase = .streaming(app, transport, renderer, controller, config.fps)
         } catch {

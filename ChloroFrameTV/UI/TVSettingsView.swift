@@ -15,10 +15,12 @@ enum TVStreamSettings {
     static let fpsKey        = "tvFps"
     static let hdrKey        = "tvHDR"
     static let bitrateKey    = "tvBitrate"
+    static let codecKey      = "tvCodec"   // "h264" | "h265"
 
     static let defaultResolution = "1920x1080"
     static let defaultFps        = 60
     static let defaultBitrate    = 0   // 0 = auto (computed from resolution/fps)
+    static let defaultCodec      = "h264"
 
     static let resolutions: [(label: String, value: String)] = [
         ("1080p (1920×1080)", "1920x1080"),
@@ -41,6 +43,7 @@ struct TVSettingsView: View {
     @AppStorage(TVStreamSettings.fpsKey)        private var fps        = TVStreamSettings.defaultFps
     @AppStorage(TVStreamSettings.bitrateKey)    private var bitrate    = TVStreamSettings.defaultBitrate
     @AppStorage(TVStreamSettings.hdrKey)        private var hdr        = false
+    @AppStorage(TVStreamSettings.codecKey)      private var codec      = TVStreamSettings.defaultCodec
 
     @Environment(\.dismiss) private var dismiss
 
@@ -66,11 +69,21 @@ struct TVSettingsView: View {
                         }
                     }
 
+                    Picker("Codec", selection: $codec) {
+                        Text("H.264 (AVC)").tag("h264")
+                        Text("H.265 (HEVC)").tag("h265")
+                    }
+                    .onChange(of: codec) { _, newValue in
+                        // HDR requires HEVC; turn it off if the user drops to H.264.
+                        if newValue != "h265" { hdr = false }
+                    }
+
                     Toggle("HDR", isOn: $hdr)
+                        .disabled(codec != "h265")
                 }
 
                 Section {
-                    Text("HDR streams with HEVC and needs the host to have HDR enabled and an HDR-capable TV. It's experimental on tvOS. With HDR off the stream uses H.264.")
+                    Text("H.264 is broadly supported; H.265 (HEVC) is better quality at lower bitrate but needs HEVC hardware decode. HDR requires H.265 plus host HDR and an HDR-capable TV (experimental on tvOS).")
                         .font(.callout)
                         .foregroundStyle(.secondary)
                 }
