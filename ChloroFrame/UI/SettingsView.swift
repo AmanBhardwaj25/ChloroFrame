@@ -33,8 +33,25 @@ struct SettingsView: View {
                 Picker("Codec", selection: $preferredCodec) {
                     Text("H.264 (AVC)").tag("h264")
                     Text("H.265 (HEVC)").tag("h265")
+                    // AV1 is always listed, but greyed out (disabled) when this device
+                    // has no hardware AV1 decoder, so the user can see it exists and
+                    // why it isn't available rather than it silently missing.
+                    Text(VideoCapabilities.supportsAV1Hardware
+                         ? "AV1"
+                         : "AV1 (not supported on this device)")
+                        .tag("av1")
+                        .disabled(!VideoCapabilities.supportsAV1Hardware)
                 }
-                .help("H.264 is broadly supported; H.265 is better quality at lower bitrates but requires HEVC decoding support")
+                .help("H.264 is broadly supported; H.265 is better quality at lower bitrates but requires HEVC decoding support; AV1 is the most efficient but requires a recent Apple silicon hardware AV1 decoder")
+                .onAppear {
+                    // Normalize a stale stored preference: if AV1 was selected on a
+                    // device that supports it and the user later moves to one that
+                    // doesn't, fall back to HEVC so the picker can't show a disabled
+                    // row as the active selection.
+                    if preferredCodec == "av1" && !VideoCapabilities.supportsAV1Hardware {
+                        preferredCodec = "h265"
+                    }
+                }
 
                 // Toggle("Hardware Acceleration", isOn: $hardwareAcceleration)
                 //     .help("Use Apple Silicon's dedicated media engines")

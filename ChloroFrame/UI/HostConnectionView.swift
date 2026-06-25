@@ -214,7 +214,7 @@ struct HostConnectionView: View {
                             AppCard(app: app, fetchBoxArt: {
                                 await client.fetchBoxArt(id: app.id)
                             }) {
-                                Task { await launch(app: app) }
+                                Task { await launch(app: app, serverInfo: info) }
                             }
                         }
                     }
@@ -314,7 +314,7 @@ struct HostConnectionView: View {
         }
     }
 
-    private func launch(app: SunshineApp) async {
+    private func launch(app: SunshineApp, serverInfo: ServerInfo) async {
         phase = .launching(app)
         let base    = DisplayConfig.detect()
         let display = buildDisplayConfig(base: base)
@@ -322,7 +322,16 @@ struct HostConnectionView: View {
         // (hdrMode — Apollo uses this to enable Windows HDR before encoder setup) and the
         // subsequent RTSP negotiation (dynamicRangeMode). Using different values in the two
         // legs is what caused the "P010/BT.2020 but not PQ" mismatch.
-        let codec: VideoCodec = preferredCodec == "h264" ? .h264 : .hevc
+        // AV1 only when the local device has a HW AV1 decoder AND the host advertises AV1;
+        // otherwise fall back to HEVC. (RTSP DESCRIBE applies a second downgrade if the
+        // host's actual SDP lacks AV1/90000.) H.264/HEVC behavior is unchanged.
+        let codec: VideoCodec
+        switch preferredCodec {
+        case "h264": codec = .h264
+        case "av1" where VideoCapabilities.supportsAV1Hardware && serverInfo.supportsAV1Main8:
+            codec = .av1
+        default:     codec = .hevc
+        }
         let enableHdr = enableHDR && display.hdr && codec == .hevc && app.isHDRSupported
         do {
             let result = try await client.launchApp(id: app.id, display: display, hdrMode: enableHdr)

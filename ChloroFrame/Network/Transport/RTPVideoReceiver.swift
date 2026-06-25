@@ -73,10 +73,14 @@ final class RTPVideoReceiver {
     /// Binds the UDP socket and sends the first SS_PING before returning.
     /// Callers must await this so Start A/B is sent only after the socket is ready.
     func start(host: String, serverPort: UInt16, localPort: UInt16, pingPayload: String) async throws {
-        queue.onFrameAssembled = { [weak self] _, annexB, rtpTimestamp in
+        queue.onFrameAssembled = { [weak self] _, frameBytes, rtpTimestamp, frameType in
             guard let self else { return }
             self.advanceRtpTimeline(rtpTimestamp)
-            self.processFrame(annexB)
+            if self.videoCodec == .av1 {
+                self.processAV1Frame(frameBytes, frameType: frameType)
+            } else {
+                self.processFrame(frameBytes)
+            }
         }
 
         queue.onFrameLost = { [weak self] frameNumber in
@@ -315,6 +319,57 @@ final class RTPVideoReceiver {
         }
 
         guard decoder.isReady, !sample.isEmpty else { return }
+        let pts = CMTime(value: extendedRtpTs, timescale: 90_000)
+        decoder.decode(nalUnit: sample, presentationTime: pts, resetClockBeforeOutput: isResetFrame)
+    }
+
+    /// AV1 path. The reassembled buffer is already a complete AV1 temporal unit
+    /// (size-delimited OBUs in Sunshine's low-overhead framing) — no NAL rewrite,
+    /// no parameter-set stripping. We only OBU-walk to extract the sequence header
+    /// at setup (and for the key-frame fallback while awaiting an IDR); steady-state
+    /// frames are submitted to the decoder as-is.
+    private func processAV1Frame(_ frameBytes: UnsafeBufferPointer<UInt8>, frameType: UInt8) {
+        // Key-frame decision: Sunshine frame-header type byte (2 = IDR) fast path,
+        // OR a sequence-header-OBU presence fallback whenever we still need a key
+        // frame. The `!decoder.isReady` term is what lets the FIRST frame be
+        // recognized at startup even if the type byte is unreliable.
+        let needKeyFrame = waitingForIdr || !decoder.isReady
+        let isKeyFrame = (frameType == 2)
+            || (needKeyFrame && AV1OBU.hasLeadingSequenceHeader(frameBytes))
+
+        let isResetFrame = waitingForIdr && isKeyFrame
+        if waitingForIdr {
+            if !isKeyFrame { return }
+            waitingForIdr = false
+        }
+
+        framesProcessed += 1
+
+        if !decoder.isReady {
+            guard isKeyFrame, let seq = AV1OBU.parseSequenceHeader(in: frameBytes) else { return }
+            guard let fmt = VideoFormatHelper.createAV1FormatDescription(seq: seq, isHDR: decoder.isHdr) else {
+                print("[RTPVideoReceiver] AV1 format-description build failed — waiting for next IDR")
+                waitingForIdr = true
+                return
+            }
+            do {
+                try decoder.setup(for: fmt)
+                stats?.setReceivedCodec(.av1)
+            } catch {
+                print("[RTPVideoReceiver] AV1 decoder setup failed: \(error) — waiting for next IDR")
+                waitingForIdr = true
+                return
+            }
+        }
+
+        guard decoder.isReady, frameBytes.count > 0 else { return }
+        // The reassembled frame is zero-padded to a fixed shard size; trim to the
+        // end of the last valid OBU so VideoToolbox doesn't reject the trailing
+        // padding (kVTVideoDecoderBadDataErr). The trimmed prefix is the complete
+        // temporal unit.
+        let validLen = AV1OBU.validTemporalUnitLength(frameBytes)
+        guard validLen > 0 else { return }
+        let sample = Data(buffer: UnsafeBufferPointer(rebasing: frameBytes[0..<validLen]))
         let pts = CMTime(value: extendedRtpTs, timescale: 90_000)
         decoder.decode(nalUnit: sample, presentationTime: pts, resetClockBeforeOutput: isResetFrame)
     }
