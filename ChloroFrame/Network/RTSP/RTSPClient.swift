@@ -386,7 +386,8 @@ final class RTSPClient {
     /// Format mirrors Moonlight's SdpGenerator for AppVersion 7 / Sunshine.
     private func buildDescribeSDP(serverHost: String, videoLocalPort: UInt16,
                                    config: StreamConfig, encryptionEnabled: UInt32 = 1) -> String {
-        let adjusted = min(Int(Double(config.bitrate) * 0.80), 100_000)
+        // Cap raised to 500 Mbps to allow experimenting with the custom bitrate field.
+        let adjusted = min(Int(Double(config.bitrate) * 0.80), 500_000)
         let bitStreamFormat = switch config.codec {
             case .h264: 0
             case .hevc: 1

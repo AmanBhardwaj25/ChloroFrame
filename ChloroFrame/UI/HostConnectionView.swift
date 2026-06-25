@@ -322,17 +322,24 @@ struct HostConnectionView: View {
         // (hdrMode — Apollo uses this to enable Windows HDR before encoder setup) and the
         // subsequent RTSP negotiation (dynamicRangeMode). Using different values in the two
         // legs is what caused the "P010/BT.2020 but not PQ" mismatch.
-        // AV1 only when the local device has a HW AV1 decoder AND the host advertises AV1;
-        // otherwise fall back to HEVC. (RTSP DESCRIBE applies a second downgrade if the
-        // host's actual SDP lacks AV1/90000.) H.264/HEVC behavior is unchanged.
+        // Whether the user wants HDR and the display/app can carry it. AV1 HDR needs
+        // host AV1 Main10; SDR AV1 needs Main8. If AV1+HDR is requested but the host
+        // lacks Main10, fall through to HEVC (which still gets HDR if the host supports
+        // it) rather than silently dropping HDR.
+        let wantHdr = enableHDR && display.hdr && app.isHDRSupported
+        // AV1 only when the local device has a HW AV1 decoder AND the host advertises the
+        // matching AV1 profile (Main10 for HDR, Main8 for SDR); otherwise fall back to
+        // HEVC. (RTSP DESCRIBE applies a second downgrade if the host's actual SDP lacks
+        // AV1/90000.) H.264/HEVC behavior is unchanged.
         let codec: VideoCodec
         switch preferredCodec {
         case "h264": codec = .h264
-        case "av1" where VideoCapabilities.supportsAV1Hardware && serverInfo.supportsAV1Main8:
+        case "av1" where VideoCapabilities.supportsAV1Hardware
+                      && (wantHdr ? serverInfo.supportsAV1Main10 : serverInfo.supportsAV1Main8):
             codec = .av1
         default:     codec = .hevc
         }
-        let enableHdr = enableHDR && display.hdr && codec == .hevc && app.isHDRSupported
+        let enableHdr = wantHdr && (codec == .hevc || codec == .av1)
         do {
             let result = try await client.launchApp(id: app.id, display: display, hdrMode: enableHdr)
             // Show the negotiating UI immediately, then start RTSP in the same task.
@@ -487,6 +494,14 @@ private struct StreamSettingsPopover: View {
                         Text("50 Mbps").tag(50_000)
                         Text("80 Mbps").tag(80_000)
                     }
+
+                    // Custom bitrate (Mbps). Overrides the picker above; 0 = Auto.
+                    // Clamped to 500 Mbps for now (experimental).
+                    TextField("Custom (Mbps)", value: Binding(
+                        get: { overrideBitrate / 1000 },
+                        set: { overrideBitrate = max(0, min($0, 500)) * 1000 }
+                    ), format: .number)
+                    .help("Type a custom target bitrate in Mbps (max 500). Takes effect on the next connect.")
                 }
 
                 Section {

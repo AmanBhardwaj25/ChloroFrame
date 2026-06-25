@@ -114,6 +114,19 @@ final class AV1OBUTests: XCTestCase {
         XCTAssertEqual(dims.width, 3024)
         XCTAssertEqual(dims.height, 1890)
     }
+
+    func testCreateAV1FormatDescriptionHDRTags() {
+        let seq = withBuf(AV1Fixtures.keyFrame) { AV1OBU.parseSequenceHeader(in: $0) }!
+        let fmt = try! XCTUnwrap(VideoFormatHelper.createAV1FormatDescription(seq: seq, isHDR: true))
+        let ext = CMFormatDescriptionGetExtensions(fmt) as? [CFString: Any]
+        // HDR10: PQ transfer + BT.2020 primaries/matrix attached to the format desc.
+        XCTAssertEqual(ext?[kCMFormatDescriptionExtension_TransferFunction] as! CFString?,
+                       kCMFormatDescriptionTransferFunction_SMPTE_ST_2084_PQ)
+        XCTAssertEqual(ext?[kCMFormatDescriptionExtension_ColorPrimaries] as! CFString?,
+                       kCMFormatDescriptionColorPrimaries_ITU_R_2020)
+        XCTAssertEqual(ext?[kCMFormatDescriptionExtension_YCbCrMatrix] as! CFString?,
+                       kCMFormatDescriptionYCbCrMatrix_ITU_R_2020)
+    }
 }
 
 final class ServerCapabilityTests: XCTestCase {
@@ -127,5 +140,11 @@ final class ServerCapabilityTests: XCTestCase {
         XCTAssertTrue(info(codecModeSupport: 0x00010003).supportsAV1Main8)  // with H.264 bits too
         XCTAssertFalse(info(codecModeSupport: 0x00020000).supportsAV1Main8) // AV1 Main10 only
         XCTAssertFalse(info(codecModeSupport: 0x00000003).supportsAV1Main8) // H.264/HEVC only
+    }
+
+    func testSupportsAV1Main10() {
+        XCTAssertTrue(info(codecModeSupport: 0x00020000).supportsAV1Main10)
+        XCTAssertFalse(info(codecModeSupport: 0x00010000).supportsAV1Main10) // Main8 only
+        XCTAssertFalse(info(codecModeSupport: 0x00000003).supportsAV1Main10) // H.264/HEVC only
     }
 }

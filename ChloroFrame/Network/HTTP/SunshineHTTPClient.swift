@@ -31,6 +31,9 @@ struct ServerInfo {
 
     /// True when the host advertises AV1 Main 8-bit encoding.
     var supportsAV1Main8: Bool { codecModeSupport & Self.scmAV1Main8 != 0 }
+
+    /// True when the host advertises AV1 Main 10-bit encoding (required for HDR10).
+    var supportsAV1Main10: Bool { codecModeSupport & Self.scmAV1Main10 != 0 }
 }
 
 struct SunshineApp: Identifiable {

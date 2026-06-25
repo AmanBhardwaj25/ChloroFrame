@@ -59,9 +59,9 @@ struct SettingsView: View {
                 // Toggle("Low Latency Mode", isOn: $lowLatencyMode)
                 //     .help("Minimize buffering for responsive input")
 
-                Toggle("HDR (requires HEVC + host HDR on)", isOn: $enableHDR)
-                    .help("Request HDR10 (BT.2020 PQ) encoding. Enable only when the host system has HDR active — requires HEVC codec. Takes effect on the next connect.")
-                    .disabled(preferredCodec != "h265")
+                Toggle("HDR (requires HEVC or AV1 + host HDR on)", isOn: $enableHDR)
+                    .help("Request HDR10 (BT.2020 PQ) encoding. Enable only when the host system has HDR active — requires the HEVC or AV1 codec (AV1 needs host AV1 Main10 support). Takes effect on the next connect.")
+                    .disabled(preferredCodec != "h265" && preferredCodec != "av1")
             }
 
             section("Audio") {
