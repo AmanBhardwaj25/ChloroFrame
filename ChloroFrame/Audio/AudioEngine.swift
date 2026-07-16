@@ -26,7 +26,7 @@ import AVFoundation
 
 private let alog = NoopLog()
 
-enum AudioEngineState {
+nonisolated enum AudioEngineState {
     case stopped, priming, running
 
     var label: String {
@@ -36,6 +36,13 @@ enum AudioEngineState {
         case .running: return "running"
         }
     }
+}
+
+/// Audio recovery status surfaced to the UI (CP3). `.failed` = the engine could not recover
+/// from a device/route change after exhausting retries (fallback banner shown); `.ok` = the
+/// engine (re)started and is running (banner cleared).
+nonisolated enum AudioRecoveryStatus: Sendable {
+    case ok, failed
 }
 
 enum AudioEngineError: Error {
@@ -109,6 +116,26 @@ final class AudioEngine: @unchecked Sendable {
     // while the slow average catches up.
     private static let driftAvgAlpha:        Double = 0.001            // EMA weight on occupancy
 
+    // ── In-place restart (CP1): recover from an output-device / route change ────────────
+    // AVAudioEngine follows the system default output device and stops itself when that
+    // device changes (AirPods taken over by a phone call and returning, HDMI, etc.). The
+    // engine can then transiently fail to (re)start while CoreAudio is still switching the
+    // device, so we back off and retry rather than giving up. (The pre-warm path currently
+    // kills audio on the first throw; CP5 routes it through here too.) If every attempt
+    // fails, CP3 surfaces the fallback banner.
+    private static let restartMaxAttempts: Int = 6
+    private static let restartBackoffNanos: [UInt64] = [
+        100_000_000,    // 100 ms
+        200_000_000,    // 200 ms
+        400_000_000,    // 400 ms
+        800_000_000,    // 800 ms
+        1_600_000_000,  // 1.6 s
+        3_200_000_000,  // 3.2 s
+    ]
+    // Coalesce the burst of config-change events one route switch emits (device leaves,
+    // fallback, device returns): wait this long after the last event before restarting once.
+    private static let configChangeSettleNanos: UInt64 = 400_000_000   // 400 ms
+
     private let ringBuffer = AudioRingBuffer(capacityFrames: 8192,                  // ~170 ms
                                              primingTargetFrames: targetPrimingFrames,
                                              maxLatencyFrames: initialMaxLatencyFrames)
@@ -120,6 +147,16 @@ final class AudioEngine: @unchecked Sendable {
     private let audioQueue = DispatchQueue(label: "chloroframe.audio", qos: .userInteractive)
     private var state:       AudioEngineState = .stopped
     private var decodeCount: Int = 0
+
+    // Config-change recovery (CP2). Both touched on audioQueue only.
+    private var configChangeObserver:      NSObjectProtocol?
+    private var pendingConfigChangeRestart: DispatchWorkItem?
+
+    // Recovery status surfaced to the UI (CP3). Set by the owner before start(); invoked on
+    // audioQueue (the UI hops to main, matching onENetDisconnect). lastRecoveryStatus is
+    // audioQueue-only and de-dupes so we fire only on transitions (.ok <-> .failed).
+    var onRecoveryStatusChange: ((AudioRecoveryStatus) -> Void)?
+    private var lastRecoveryStatus: AudioRecoveryStatus = .ok
 
     // Drift servo state (audioQueue only).
     private var driftAvgFrames:     Double = Double(targetPrimingFrames)
@@ -236,6 +273,7 @@ final class AudioEngine: @unchecked Sendable {
             alog.info("audio buffer: low-latency profile")
         }
         setupSourceNode()
+        registerConfigChangeObserver()
         state = .priming
         // Pre-warm: start the engine NOW, during connection setup, so its ~300 ms cold
         // start happens before audio is flowing. The render callback outputs silence
@@ -260,28 +298,152 @@ final class AudioEngine: @unchecked Sendable {
     }
 
     private func stopOnQueue() {
+        if let obs = configChangeObserver {
+            NotificationCenter.default.removeObserver(obs)
+            configChangeObserver = nil
+        }
+        pendingConfigChangeRestart?.cancel()
+        pendingConfigChangeRestart = nil
         avEngine.stop()
         decoder = nil
-        ringBuffer.reset()
-        decodeCount        = 0
-        lastDecodedSeq     = nil
-        concealedFrames    = 0
-        lastSummaryNanos   = 0
-        diagPrevRtp        = nil
-        diagPrevArrival    = nil
-        driftAvgFrames     = Double(Self.targetPrimingFrames)
-        driftLastCorrection = 0
-        driftDrops         = 0
-        driftInserts       = 0
-        enginePrewarmNanos = 0
-        adaptiveTargetFrames = Double(Self.targetPrimingFrames)
-        lowWaterFrames     = Double(Self.targetPrimingFrames)
-        lastUnderrunCount  = 0
-        lastAdaptGrowNanos = 0
-        lastAdaptShrinkNanos = 0
-        ringBuffer.setMaxLatencyFrames(Self.initialMaxLatencyFrames)
+        resetPlaybackState()
         state = .stopped
         alog.info("engine stopped")
+    }
+
+    /// Reset all playback / servo / diagnostic state to fresh-start defaults. Shared by
+    /// stopOnQueue and restartOnQueue. Does NOT touch the decoder or the (still-attached)
+    /// source node, and does NOT set `state` — the caller owns that. audioQueue only;
+    /// ringBuffer.reset() is race-free here because the render callback is not pulling (the
+    /// engine is stopped before this runs).
+    private func resetPlaybackState() {
+        ringBuffer.reset()
+        decodeCount          = 0
+        lastDecodedSeq       = nil
+        concealedFrames      = 0
+        lastSummaryNanos     = 0
+        diagPrevRtp          = nil
+        diagPrevArrival      = nil
+        driftAvgFrames       = Double(Self.targetPrimingFrames)
+        driftLastCorrection  = 0
+        driftDrops           = 0
+        driftInserts         = 0
+        enginePrewarmNanos   = 0
+        adaptiveTargetFrames = Double(Self.targetPrimingFrames)
+        lowWaterFrames       = Double(Self.targetPrimingFrames)
+        lastUnderrunCount    = 0
+        lastAdaptGrowNanos   = 0
+        lastAdaptShrinkNanos = 0
+        ringBuffer.setMaxLatencyFrames(Self.initialMaxLatencyFrames)
+    }
+
+    // MARK: - Restart (in-place re-prime; used by config-change recovery & "Retry audio")
+
+    /// Re-prime and restart the engine in place, reusing the attached source node (no
+    /// re-attach). Used by the config-change recovery path (CP2) and the fallback "Retry
+    /// audio" action (CP4). No-op once the stream is torn down. Safe from any thread — it
+    /// only dispatches async onto audioQueue.
+    func restart() {
+        audioQueue.async { [weak self] in self?.restartOnQueue() }
+    }
+
+    private func restartOnQueue() {
+        guard state != .stopped, decoder != nil else { return }
+        avEngine.stop()                 // idempotent: guarantee a known-stopped graph
+        resetPlaybackState()            // race-free: render callback not pulling while stopped
+        state = .priming
+        enginePrewarmNanos = clock_gettime_nsec_np(CLOCK_MONOTONIC_RAW)
+        alog.info("engine restart — re-priming, target \(Self.targetPrimingFrames) frames")
+        SessionLog.shared.line("AUDIO-RESTART re-priming after device/route change")
+        startEngineWithRetry(attempt: 0)
+    }
+
+    /// Start avEngine on the main thread (matching the pre-warm path), retrying with backoff
+    /// while the output device settles after a route change. Bails cleanly if the stream is
+    /// torn down between attempts. audioQueue only ever dispatches *async* to main, so the
+    /// inner audioQueue.sync cannot deadlock (same invariant as startOnQueue's pre-warm).
+    private func startEngineWithRetry(attempt: Int) {
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            guard self.audioQueue.sync(execute: { self.state != .stopped }) else { return }
+            do {
+                try self.avEngine.start()
+                self.notifyRecoveryStatus(.ok)          // clears any prior .failed (de-duped)
+                if attempt > 0 {
+                    self.audioQueue.async {
+                        SessionLog.shared.line("AUDIO-RESTART engine recovered on attempt \(attempt + 1)")
+                    }
+                }
+            } catch {
+                let next = attempt + 1
+                if next >= Self.restartMaxAttempts {
+                    alog.error("AVAudioEngine restart gave up after \(next) attempts: \(error.localizedDescription)")
+                    // Give up auto-recovery but stay RECOVERABLE: keep the decoder, source node,
+                    // and config observer alive (no teardown) so the fallback "Retry audio" (CP4)
+                    // can call restart(). Surface the failure to the UI (CP3).
+                    self.notifyRecoveryStatus(.failed)
+                    return
+                }
+                let backoff = Self.restartBackoffNanos[min(attempt, Self.restartBackoffNanos.count - 1)]
+                alog.warning("AVAudioEngine restart attempt \(next) failed: \(error.localizedDescription); retrying in \(backoff / 1_000_000) ms")
+                self.audioQueue.asyncAfter(deadline: .now() + .nanoseconds(Int(backoff))) { [weak self] in
+                    guard let self, self.state != .stopped else { return }
+                    self.startEngineWithRetry(attempt: next)
+                }
+            }
+        }
+    }
+
+    // MARK: - Config-change recovery (CP2)
+
+    /// Observe output-device / route changes. AVAudioEngine stops itself and posts this
+    /// notification when the system default output device changes (AirPods taken over by a
+    /// phone call and returning, HDMI, sample-rate). object == avEngine so we only see our
+    /// own engine's events. Registered on audioQueue in startOnQueue, removed in stopOnQueue.
+    private func registerConfigChangeObserver() {
+        guard configChangeObserver == nil else { return }
+        configChangeObserver = NotificationCenter.default.addObserver(
+            forName: .AVAudioEngineConfigurationChange,
+            object: avEngine,
+            queue: nil                       // posting thread; we hop to audioQueue below
+        ) { [weak self] _ in
+            self?.handleConfigurationChange()
+        }
+    }
+
+    /// Debounce config-change events and restart once things settle. Acts only from the
+    /// settled .running state: this coalesces the switch burst (state stays .running until
+    /// the debounced restart actually fires, so each event just reschedules) AND prevents a
+    /// restart loop from any echo our own start() might post while we are still .priming.
+    /// A change that arrives mid-priming is dropped here; the CP5 watchdog is the backstop.
+    private func handleConfigurationChange() {
+        audioQueue.async { [weak self] in
+            guard let self, self.state == .running else { return }
+            self.pendingConfigChangeRestart?.cancel()
+            let work = DispatchWorkItem { [weak self] in
+                guard let self, self.state == .running else { return }
+                self.pendingConfigChangeRestart = nil
+                SessionLog.shared.line("AUDIO-CONFIG output device/route changed — restarting engine")
+                self.restartOnQueue()
+            }
+            self.pendingConfigChangeRestart = work
+            self.audioQueue.asyncAfter(
+                deadline: .now() + .nanoseconds(Int(Self.configChangeSettleNanos)),
+                execute: work)
+        }
+    }
+
+    // MARK: - Recovery status (CP3)
+
+    /// Emit a recovery-status transition to the owner. De-duped so repeated same-status calls
+    /// are no-ops. Runs the de-dupe on audioQueue and invokes the callback there; the UI side
+    /// hops to main (matching onENetDisconnect). Safe to call from any thread.
+    private func notifyRecoveryStatus(_ status: AudioRecoveryStatus) {
+        audioQueue.async { [weak self] in
+            guard let self, self.lastRecoveryStatus != status else { return }
+            self.lastRecoveryStatus = status
+            self.onRecoveryStatusChange?(status)
+        }
     }
 
     /// Move the ring's latency ceiling to track the current adaptive target (audioQueue).

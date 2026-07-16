@@ -30,6 +30,9 @@ final class StreamState {
     var appName:       String = ""
     var codecInfo:     String = ""
     var disconnectError: Error?
+    // True when audio auto-recovery from a device/route change gave up (CP3). Drives the
+    // fallback banner (CP4). Reset when a stream starts or ends.
+    var audioRecoveryFailed: Bool = false
 
     private var cancelClosure: (() async -> Void)?
 
@@ -53,7 +56,18 @@ final class StreamState {
         self.codecInfo     = codecInfo
         self.cancelClosure = onCancel
         self.disconnectError = nil
+        self.audioRecoveryFailed = false
         controller.start()
+    }
+
+    /// Bridge from the audio engine's recovery signal (CP3). Called on the main actor.
+    func setAudioRecoveryStatus(_ status: AudioRecoveryStatus) {
+        audioRecoveryFailed = (status == .failed)
+    }
+
+    /// Fallback "Retry audio" action (CP4): ask the transport to restart the audio engine.
+    func retryAudio() {
+        transport?.retryAudio()
     }
 
     func stop() {
@@ -83,5 +97,6 @@ final class StreamState {
         cancelClosure = nil
         appName       = ""
         codecInfo     = ""
+        audioRecoveryFailed = false
     }
 }

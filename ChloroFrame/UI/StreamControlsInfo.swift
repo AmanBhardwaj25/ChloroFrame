@@ -27,6 +27,8 @@ enum StreamControlsInfo {
         StreamControl(keys: "\(trio) Q", title: "Disconnect", detail: nil),
         StreamControl(keys: "\(trio) M", title: "Show / hide the Mac cursor", detail: nil),
         StreamControl(keys: "\(trio) S", title: "Toggle the stats overlay", detail: nil),
+        StreamControl(keys: "\(trio) R", title: "Retry / reset stream audio",
+                      detail: "Recovers audio after an output-device change (AirPods, headphones)."),
         StreamControl(keys: "\(trio) F", title: "fn layer for 10 seconds",
                       detail: "Arrows → Page Up/Down, Home, End · Delete → Forward Delete"),
     ]

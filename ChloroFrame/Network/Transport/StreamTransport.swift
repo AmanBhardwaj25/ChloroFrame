@@ -31,6 +31,7 @@ final class StreamTransport {
     var onENetDisconnect: (() -> Void)?
     var onVideoTexture:   ((CVPixelBuffer, CMTime) -> Void)?
     var onClockReset:     (() -> Void)?
+    var onAudioRecoveryStatusChange: ((AudioRecoveryStatus) -> Void)?
 
     let stats = StreamStatsCollector()
     private var streamActivity: NSObjectProtocol?
@@ -47,6 +48,12 @@ final class StreamTransport {
     }
 
     // MARK: - Lifecycle
+
+    /// Restart the audio engine in place (fallback "Retry audio" action, CP4). Re-primes and
+    /// re-binds to the current default output device; no-op if audio was never started.
+    func retryAudio() {
+        audioEngine?.restart()
+    }
 
     /// Start all transport streams. Must be called immediately after RTSP PLAY.
     func start() async throws {
@@ -128,6 +135,9 @@ final class StreamTransport {
         stats.start()
 
         let engine = AudioEngine()
+        engine.onRecoveryStatusChange = { [weak self] status in
+            self?.onAudioRecoveryStatusChange?(status)
+        }
         try engine.start()
         audioEngine = engine
         stats.audioStatsProvider = { [weak engine] in engine?.stats }
