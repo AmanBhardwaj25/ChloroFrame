@@ -75,6 +75,61 @@ struct VideoFormatHelper {
         return formatDescription
     }
     
+    /// Create a format description for an AV1 stream from a parsed sequence header.
+    ///
+    /// VideoToolbox needs a `kCMVideoCodecType_AV1` format description carrying an
+    /// `av1C` configuration record in its extensions. We build `av1C` ourselves
+    /// from the sequence header (AV1 Codec ISO Media File Format binding): a 4-byte
+    /// header followed by the COMPLETE sequence-header OBU as `configOBUs` (header +
+    /// leb128 size + payload — `seq.obuBytes` verbatim). Real dimensions from the
+    /// sequence header are passed in; we do not rely on VT to infer them.
+    static func createAV1FormatDescription(seq: AV1SequenceHeader, isHDR: Bool) -> CMFormatDescription? {
+        var av1C = [UInt8]()
+        av1C.append(0x81)  // marker(1)=1, version(7)=1
+        av1C.append((seq.seqProfile << 5) | (seq.seqLevelIdx0 & 0x1F))
+        av1C.append((seq.seqTier0 << 7)
+                  | ((seq.highBitdepth ? 1 : 0) << 6)
+                  | ((seq.twelveBit    ? 1 : 0) << 5)
+                  | ((seq.monochrome   ? 1 : 0) << 4)
+                  | ((seq.subsamplingX ? 1 : 0) << 3)
+                  | ((seq.subsamplingY ? 1 : 0) << 2)
+                  | (seq.chromaSamplePosition & 0x3))
+        av1C.append(0x00)  // reserved(3)=0, initial_presentation_delay_present(1)=0, minus_one(4)=0
+        av1C.append(contentsOf: seq.obuBytes)  // configOBUs = whole seq-header OBU
+
+        let atoms = ["av1C": Data(av1C)] as CFDictionary
+        var extensions: [CFString: Any] = [
+            kCMFormatDescriptionExtension_SampleDescriptionExtensionAtoms: atoms,
+        ]
+        if isHDR {
+            // Parallels the HEVC HDR path: PQ + BT.2020 so the renderer's true-HDR
+            // check (P010 + PQ + BT.2020) passes.
+            extensions[kCMFormatDescriptionExtension_TransferFunction] =
+                kCMFormatDescriptionTransferFunction_SMPTE_ST_2084_PQ
+            extensions[kCMFormatDescriptionExtension_ColorPrimaries] =
+                kCMFormatDescriptionColorPrimaries_ITU_R_2020
+            extensions[kCMFormatDescriptionExtension_YCbCrMatrix] =
+                kCMFormatDescriptionYCbCrMatrix_ITU_R_2020
+        }
+
+        var formatDescription: CMFormatDescription?
+        let status = CMVideoFormatDescriptionCreate(
+            allocator:            kCFAllocatorDefault,
+            codecType:            kCMVideoCodecType_AV1,
+            width:                Int32(seq.maxWidth),
+            height:               Int32(seq.maxHeight),
+            extensions:           extensions as CFDictionary,
+            formatDescriptionOut: &formatDescription
+        )
+        if status != noErr {
+            AppLogger.shared.log(
+                "CMVideoFormatDescriptionCreate(AV1) status=\(status) \(seq.maxWidth)x\(seq.maxHeight) profile=\(seq.seqProfile) bitDepth=\(seq.bitDepth) av1C=\(av1C.count)B",
+                "video", "format"
+            )
+        }
+        return formatDescription
+    }
+
     /// Parse NAL unit type from the first byte
     static func parseH264NALType(_ data: Data) -> H264NALType? {
         guard let firstByte = data.first else { return nil }

@@ -21,6 +21,19 @@ struct ServerInfo {
     let codecModeSupport: Int
 
     var isPaired: Bool { pairStatus == 1 }
+
+    // Sunshine ServerCodecModeSupport AV1 bits (from moonlight Limelight.h).
+    // Milestone 1 only needs Main8; the others are listed for when we extend.
+    static let scmAV1Main8     = 0x00010000
+    static let scmAV1Main10    = 0x00020000
+    static let scmAV1High8_444 = 0x00200000
+    static let scmAV1High10_444 = 0x00400000
+
+    /// True when the host advertises AV1 Main 8-bit encoding.
+    var supportsAV1Main8: Bool { codecModeSupport & Self.scmAV1Main8 != 0 }
+
+    /// True when the host advertises AV1 Main 10-bit encoding (required for HDR10).
+    var supportsAV1Main10: Bool { codecModeSupport & Self.scmAV1Main10 != 0 }
 }
 
 struct SunshineApp: Identifiable {

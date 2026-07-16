@@ -53,11 +53,13 @@ final class RtpVideoQueue {
     let useSwiftFEC: Bool
 
     // Emitted once per fully assembled frame with a borrowed view of the complete
-    // Annex-B byte stream (all blocks, in sequence order).
-    // Parameters: (frameIndex, annexBBytes, rtpTimestamp)
+    // elementary byte stream (all blocks, in sequence order).
+    // Parameters: (frameIndex, frameBytes, rtpTimestamp, frameType)
     // rtpTimestamp is the RTP timestamp of the frame (90 kHz clock, big-endian bytes 4-7 of RTP header).
+    // frameType is the Sunshine frame-header type byte (1=P, 2=IDR, 4=intra-refresh,
+    // 5=P-ref-inval; 1 when no header was present). H.264/HEVC ignore it; AV1 uses it.
     // The pointer is only valid for the duration of the call — copy if it must outlive it.
-    var onFrameAssembled: ((UInt32, UnsafeBufferPointer<UInt8>, UInt32) -> Void)?
+    var onFrameAssembled: ((UInt32, UnsafeBufferPointer<UInt8>, UInt32, UInt8) -> Void)?
 
     // Fired when a frame is determined to be unrecoverable (lost FEC block or frame gap).
     // The receiver should discard P-frames and request an IDR from the server.
@@ -111,6 +113,11 @@ final class RtpVideoQueue {
 
     // RTP timestamp (90 kHz, BE bytes 4-7) of the current frame; set on the first FEC block.
     private var currentFrameRtpTimestamp: UInt32 = 0
+
+    // Sunshine frame-header type byte (offset +3 of the SOF frame header): 1=P,
+    // 2=IDR, 4=intra-refresh, 5=P-ref-inval. Defaults to 1 (P) when no header is
+    // present. Read in stageBlock when the SOF header is parsed, emitted in submitFrame.
+    private var currentFrameType: UInt8 = 1
 
     private var packetLogCount = 0
     private var blockLogCount = 0
@@ -216,6 +223,10 @@ final class RtpVideoQueue {
             if fecBlock == 0 {
                 currentFrameRtpTimestamp = UInt32(datagram[4]) << 24 | UInt32(datagram[5]) << 16
                                          | UInt32(datagram[6]) << 8  | UInt32(datagram[7])
+                // Default to P-frame; stageBlock overwrites from the SOF header when
+                // present, so a frame whose header is unavailable can't inherit a
+                // stale (e.g. IDR) type from the previous frame.
+                currentFrameType = 1
             }
         }
 
@@ -430,8 +441,13 @@ final class RtpVideoQueue {
                 // Size is encoded in the first byte: 0x01 → 8 B, 0x81 → extended.
                 let firstByte: UInt8 = baseOffset < slotData[i].count ? slotData[i][baseOffset] : 0x01
                 frameHeaderSize = firstByte == 0x81 ? kFrameHeaderSizeExtended : kFrameHeaderSizeStandard
+                // Frame-type byte lives at offset +3 of the SOF frame header
+                // (1=P, 2=IDR, 4=intra-refresh, 5=P-ref-inval). Used for AV1 IDR
+                // detection; H.264/HEVC keep using SPS/VPS arrival and ignore this.
+                let typeOffset = baseOffset + 3
+                currentFrameType = typeOffset < slotData[i].count ? slotData[i][typeOffset] : 1
                 if frameLogCount < 8 {
-                    StreamLog.log("[rtp/queue] frame header firstByte=0x\(String(format: "%02x", firstByte)) size=\(frameHeaderSize)")
+                    StreamLog.log("[rtp/queue] frame header firstByte=0x\(String(format: "%02x", firstByte)) size=\(frameHeaderSize) frameType=\(currentFrameType)")
                 }
             } else {
                 frameHeaderSize = 0
@@ -458,8 +474,9 @@ final class RtpVideoQueue {
         let ts = currentFrameRtpTimestamp
         stats?.recordFrameAssembled(rtpTimestamp: ts)
         let frame = currentFrameNumber
+        let type = currentFrameType
         frameAssembly.withUnsafeBufferPointer { buf in
-            onFrameAssembled?(frame, buf, ts)
+            onFrameAssembled?(frame, buf, ts, type)
         }
     }
 

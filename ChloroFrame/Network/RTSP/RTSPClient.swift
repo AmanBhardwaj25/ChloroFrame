@@ -110,6 +110,21 @@ final class RTSPClient {
         ])
         guard desc.status == 200 else { throw RTSPError.badStatus(desc.status, "DESCRIBE") }
 
+        // The DESCRIBE response SDP lists the formats the server advertises. Parse
+        // it BEFORE building the ANNOUNCE SDP so an AV1 request the host doesn't
+        // advertise is downgraded to HEVC (matches moonlight RtspConnection.c). This
+        // reads advertised capability, NOT the actually-sent codec — the real
+        // last-resort guard is decoder setup failing in RTPVideoReceiver. Only an
+        // AV1 request is ever changed; H.264/HEVC pass through verbatim.
+        var effectiveConfig = config
+        if config.codec == .av1 {
+            let advertised = SDPInfo(desc.body ?? "").videoCodec
+            if advertised != .av1 {
+                effectiveConfig.codec = .hevc
+                rtspLog("server did not advertise AV1 — downgrading request to hevc", step: "DESCRIBE")
+            }
+        }
+
         // Sunshine always supports SS_ENC_CONTROL_V2 (12-byte nonce AES-GCM).
         // We hard-enable it; the value sent in ANNOUNCE tells both sides to use the same IV format.
         let encryptionEnabled: UInt32 = 1
@@ -150,7 +165,7 @@ final class RTSPClient {
 
         // ── ANNOUNCE ─────────────────────────────────────────────────────────
         // Client capability SDP (resolution, bitrate, codec, x-nv-*/x-ss-*/x-ml-* attrs).
-        let announceSDP  = buildDescribeSDP(serverHost: host, videoLocalPort: 47998, config: config,
+        let announceSDP  = buildDescribeSDP(serverHost: host, videoLocalPort: 47998, config: effectiveConfig,
                                             encryptionEnabled: encryptionEnabled)
         print("[ChloroFrame][rtsp] ANNOUNCE encryptionEnabled=\(encryptionEnabled)")
         let announceData = Data(announceSDP.utf8)
@@ -174,8 +189,8 @@ final class RTSPClient {
         print("[ChloroFrame][rtsp] PLAY OK → video:\(videoServerPort) audio:\(audioServerPort) control:\(controlServerPort) connectData=\(controlConnectData) packetSize=\(negotiatedPacketSize)")
 
         return StreamDescriptor(
-            videoCodec:          config.codec,
-            dynamicRangeMode:    config.hdr ? 1 : 0,
+            videoCodec:          effectiveConfig.codec,
+            dynamicRangeMode:    effectiveConfig.hdr ? 1 : 0,
             serverHost:          host,
             videoServerPort:     videoServerPort,
             videoLocalPort:      47998,
@@ -371,7 +386,8 @@ final class RTSPClient {
     /// Format mirrors Moonlight's SdpGenerator for AppVersion 7 / Sunshine.
     private func buildDescribeSDP(serverHost: String, videoLocalPort: UInt16,
                                    config: StreamConfig, encryptionEnabled: UInt32 = 1) -> String {
-        let adjusted = min(Int(Double(config.bitrate) * 0.80), 100_000)
+        // Cap raised to 500 Mbps to allow experimenting with the custom bitrate field.
+        let adjusted = min(Int(Double(config.bitrate) * 0.80), 500_000)
         let bitStreamFormat = switch config.codec {
             case .h264: 0
             case .hevc: 1
