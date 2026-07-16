@@ -135,7 +135,8 @@ struct ContentView: View {
                     inputHandler: streamState.inputHandler,
                     onDisconnect: { streamState.stop() },
                     onToggleStats: { showStats.toggle() },
-                    onShowControls: { revealControlsOverlay() }
+                    onShowControls: { revealControlsOverlay() },
+                    onRetryAudio: { streamState.retryAudio() }
                 )
             } else {
                 Color.black
@@ -154,11 +155,72 @@ struct ContentView: View {
                     .allowsHitTesting(false)
                     .transition(.opacity)
             }
+
+            // Fallback banner (CP4): shown only when audio auto-recovery gave up. Top-right,
+            // non-blocking — the empty area around the card has no background, so clicks pass
+            // through to the video; only the card itself is hit-testable.
+            if streamState.audioRecoveryFailed {
+                audioRecoveryBanner
+                    .padding(16)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+                    .transition(.opacity)
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .animation(.easeInOut(duration: 0.25), value: showControls)
+        .animation(.easeInOut(duration: 0.25), value: streamState.audioRecoveryFailed)
         .onAppear  { awdlMonitor.start() }
         .onDisappear { awdlMonitor.stop(); controlsHideWork?.cancel() }
+    }
+
+    // Fallback UI for a failed audio auto-recovery (CP4). ⌃⌥⌘R works during cursor capture;
+    // the buttons need the cursor free (release with ⌃⌥⌘M).
+    private var audioRecoveryBanner: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                Image(systemName: "speaker.slash.fill")
+                    .foregroundStyle(.orange)
+                Text("Audio device disconnected")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(.white)
+            }
+            Text("Stream audio couldn't reconnect after the output device changed.")
+                .font(.system(size: 12))
+                .foregroundStyle(.white.opacity(0.75))
+                .fixedSize(horizontal: false, vertical: true)
+            HStack(spacing: 10) {
+                Button { streamState.retryAudio() } label: {
+                    Label("Retry audio", systemImage: "arrow.clockwise")
+                }
+                .buttonStyle(.borderedProminent)
+                Button { openSoundSettings() } label: {
+                    Label("Sound settings", systemImage: "gearshape")
+                }
+                .buttonStyle(.bordered)
+            }
+            .controlSize(.small)
+            Text("Shortcut: \(StreamControlsInfo.trio) R")
+                .font(.system(size: 10))
+                .foregroundStyle(.white.opacity(0.55))
+        }
+        .padding(14)
+        .frame(maxWidth: 320, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 12)
+                .fill(Color.black.opacity(0.82))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 12)
+                .strokeBorder(Color.orange.opacity(0.35), lineWidth: 1)
+        )
+    }
+
+    private func openSoundSettings() {
+        // macOS 13+ System Settings deep link for the Sound pane. Verify the extension id on
+        // the target OS; if it changes, this still opens System Settings to its last pane.
+        if let url = URL(string: "x-apple.systempreferences:com.apple.Sound-Settings.extension") {
+            NSWorkspace.shared.open(url)
+        }
     }
 
     // Translucent card listing the stream shortcuts. Shown after holding ⌃⌥⌘ for 2 s,

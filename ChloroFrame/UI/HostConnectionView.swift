@@ -391,6 +391,11 @@ struct HostConnectionView: View {
                     streamState.didDisconnect(error: StreamError.controlDisconnected)
                 }
             }
+            t.onAudioRecoveryStatusChange = { status in
+                Task { @MainActor in
+                    streamState.setAudioRecoveryStatus(status)
+                }
+            }
 
             try await t.start()
 

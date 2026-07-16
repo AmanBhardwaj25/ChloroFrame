@@ -21,6 +21,7 @@ struct MetalVideoView: NSViewRepresentable {
     var onDisconnect: (() -> Void)?
     var onToggleStats: (() -> Void)?
     var onShowControls: (() -> Void)?
+    var onRetryAudio: (() -> Void)?
 
     func makeNSView(context: Context) -> InputCaptureMetalView {
         let view = InputCaptureMetalView()
@@ -28,6 +29,7 @@ struct MetalVideoView: NSViewRepresentable {
         view.onDisconnect = onDisconnect
         view.onToggleStats = onToggleStats
         view.onShowControls = onShowControls
+        view.onRetryAudio = onRetryAudio
         view.streamFps = streamFps
         view.renderer = renderer
         return view
@@ -40,6 +42,7 @@ struct MetalVideoView: NSViewRepresentable {
         nsView.onDisconnect = onDisconnect
         nsView.onToggleStats = onToggleStats
         nsView.onShowControls = onShowControls
+        nsView.onRetryAudio = onRetryAudio
         nsView.streamFps = streamFps
     }
 }
@@ -62,6 +65,7 @@ final class InputCaptureMetalView: NSView {
     var onDisconnect: (() -> Void)?
     var onToggleStats: (() -> Void)?
     var onShowControls: (() -> Void)?
+    var onRetryAudio: (() -> Void)?
     // Discovery gesture: holding ⌃⌥⌘ alone (no other key) for 2 s reveals the controls overlay.
     // Scheduled when the trio completes; cancelled if the trio breaks or any key is pressed
     // (a key press means the user is invoking a hotkey, not asking for the list).
@@ -343,6 +347,12 @@ final class InputCaptureMetalView: NSView {
         // Ctrl+Option+Command+S: toggle stream stats HUD (keyCode 0x01 = S)
         if event.keyCode == 0x01 && mods == [.control, .option, .command] {
             onToggleStats?()
+            return
+        }
+        // Ctrl+Option+Command+R: retry / reset stream audio (keyCode 0x0F = R). Works during
+        // cursor capture, so it recovers a failed device-change dropout without releasing the mouse.
+        if event.keyCode == 0x0F && mods == [.control, .option, .command] {
+            onRetryAudio?()
             return
         }
         // Ctrl+Option+Command+F: activate the fn-layer latch (10 s). fn itself is reserved by
