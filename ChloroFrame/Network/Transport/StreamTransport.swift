@@ -57,8 +57,13 @@ final class StreamTransport {
 
     /// Start all transport streams. Must be called immediately after RTSP PLAY.
     func start() async throws {
+        // Streaming input arrives over the network, not from local HID, so the system sees an
+        // idle Mac and would dim/sleep the display mid-session (common when the player uses a
+        // controller paired to the host PC). .idleDisplaySleepDisabled holds a
+        // PreventUserIdleDisplaySleep assertion for the lifetime of the activity, which also
+        // implies idle system sleep stays disabled.
         streamActivity = ProcessInfo.processInfo.beginActivity(
-            options: [.latencyCritical, .userInitiatedAllowingIdleSystemSleep],
+            options: [.latencyCritical, .userInitiated, .idleDisplaySleepDisabled],
             reason: "Active stream"
         )
         AWDLSuppressor.shared.suppress()
