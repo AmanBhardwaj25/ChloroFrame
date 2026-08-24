@@ -18,15 +18,22 @@ import UIKit
 import QuartzCore
 import Metal
 import GameController
+import AVFoundation
+import AVKit
+import CoreMedia
 
 struct TVMetalVideoView: UIViewRepresentable {
     let renderer: MetalVideoRenderer
     var streamFps: Int
+    var streamWidth: Int = 1920
+    var streamHeight: Int = 1080
 
     func makeUIView(context: Context) -> TVMetalUIView {
         let view = TVMetalUIView()
         view.renderer = renderer
         view.streamFps = streamFps
+        view.streamWidth = streamWidth
+        view.streamHeight = streamHeight
         return view
     }
 
@@ -38,6 +45,8 @@ struct TVMetalVideoView: UIViewRepresentable {
 final class TVMetalUIView: UIView {
     var renderer: MetalVideoRenderer?
     var streamFps: Int = 60 { didSet { applyFrameRateRange() } }
+    var streamWidth: Int = 1920
+    var streamHeight: Int = 1080
 
     private var displayLink: CADisplayLink?
 
@@ -59,6 +68,29 @@ final class TVMetalUIView: UIView {
         if window != nil { start() } else { stop() }
     }
 
+    // Fires BEFORE the view leaves its window, so `window` is still valid here — unlike
+    // didMoveToWindow(), which fires after (window is already nil by then, too late to
+    // reach avDisplayManager). Clearing preferredDisplayCriteria on teardown lets the TV
+    // fall back to its normal Home Screen display mode instead of staying pinned to
+    // whatever mode the stream requested.
+    override func willMove(toWindow newWindow: UIWindow?) {
+        super.willMove(toWindow: newWindow)
+        if newWindow == nil {
+            Self.avDisplayManager(for: window)?.preferredDisplayCriteria = nil
+        }
+    }
+
+    // The tvOS Simulator does not implement the UIWindow.avDisplayManager category at all —
+    // it's declared in the AVKit header, but calling it on a simulated UIWindow crashes with
+    // "unrecognized selector" (there's no real HDMI hardware for it to coordinate). responds(to:)
+    // is the standard defensive pattern for exactly this: an ObjC category whose header
+    // availability doesn't guarantee a runtime implementation. Real devices are expected to
+    // respond; this must never crash regardless of environment.
+    private static func avDisplayManager(for window: UIWindow?) -> AVDisplayManager? {
+        guard let window, window.responds(to: Selector(("avDisplayManager"))) else { return nil }
+        return window.avDisplayManager
+    }
+
     private func start() {
         guard let renderer else { return }
         metalLayer.pixelFormat = renderer.drawablePixelFormat
@@ -69,11 +101,50 @@ final class TVMetalUIView: UIView {
         link.add(to: .main, forMode: .common)
         displayLink = link
         applyFrameRateRange()
+        applyDisplayCriteria()
     }
 
     private func stop() {
         displayLink?.invalidate()
         displayLink = nil
+    }
+
+    // Requests the TV switch its HDMI output into a mode matching the stream (refresh rate +
+    // dynamic range). Without this, tvOS has no reason to leave its current display mode
+    // (usually SDR), so an HDR-tagged CAMetalLayer never reaches the panel as real HDR —
+    // AVDisplayManager/AVDisplayCriteria is tvOS-exclusive; there's no macOS/iOS equivalent
+    // to gate around, since this whole file only compiles for the tvOS target.
+    private func applyDisplayCriteria() {
+        guard let displayManager = Self.avDisplayManager(for: window) else {
+            print("[TVMetalUIView] avDisplayManager unavailable in this environment (simulator?) — skipping display criteria")
+            return
+        }
+        let isHdr = renderer?.isHdr ?? false
+
+        var extensions: [CFString: Any] = [:]
+        if isHdr {
+            extensions[kCMFormatDescriptionExtension_ColorPrimaries]   = kCMFormatDescriptionColorPrimaries_ITU_R_2020
+            extensions[kCMFormatDescriptionExtension_TransferFunction] = kCMFormatDescriptionTransferFunction_SMPTE_ST_2084_PQ
+            extensions[kCMFormatDescriptionExtension_YCbCrMatrix]      = kCMFormatDescriptionYCbCrMatrix_ITU_R_2020
+        }
+        var formatDescription: CMFormatDescription?
+        let status = CMVideoFormatDescriptionCreate(
+            allocator: kCFAllocatorDefault,
+            codecType: kCMVideoCodecType_HEVC,
+            width: Int32(streamWidth > 0 ? streamWidth : 1920),
+            height: Int32(streamHeight > 0 ? streamHeight : 1080),
+            extensions: extensions as CFDictionary,
+            formatDescriptionOut: &formatDescription
+        )
+        guard status == noErr, let formatDescription else {
+            print("[TVMetalUIView] CMVideoFormatDescriptionCreate failed status=\(status) — skipping display criteria")
+            return
+        }
+
+        let fps = Float(streamFps > 0 ? streamFps : 60)
+        let criteria = AVDisplayCriteria(refreshRate: fps, formatDescription: formatDescription)
+        displayManager.preferredDisplayCriteria = criteria
+        print("[TVMetalUIView] requested display criteria: \(streamWidth)x\(streamHeight)@\(fps) hdr=\(isHdr)")
     }
 
     override func layoutSubviews() {
@@ -114,6 +185,8 @@ final class TVMetalUIView: UIView {
 struct TVStreamSurface: UIViewControllerRepresentable {
     let renderer: MetalVideoRenderer
     var streamFps: Int
+    var streamWidth: Int = 1920
+    var streamHeight: Int = 1080
     var transport: StreamTransport?
     var onExit: () -> Void
     var onMenu: () -> Void
@@ -125,6 +198,8 @@ struct TVStreamSurface: UIViewControllerRepresentable {
         let vc = TVStreamViewController()
         vc.metalView.renderer = renderer
         vc.metalView.streamFps = streamFps
+        vc.metalView.streamWidth = streamWidth
+        vc.metalView.streamHeight = streamHeight
         vc.remoteInput = TVRemoteInput(transport: transport)
         vc.onExit = onExit
         vc.onMenu = onMenu

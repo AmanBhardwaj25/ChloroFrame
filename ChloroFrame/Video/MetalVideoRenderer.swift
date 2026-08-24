@@ -133,10 +133,15 @@ class MetalVideoRenderer {
         // after the first frame is decoded — don't let that reset lastDetectedHDR back to the
         // negotiated guess). Fall back to isHdr only before any frame has been seen.
         let effectiveHDR = lastDetectedHDR ?? isHdr
-        // wantsExtendedDynamicRangeContent is macOS-only. tvOS is SDR for now (HDR is a
-        // later phase), so effectiveHDR is false there and the EDR opt-in is simply skipped.
+        // wantsExtendedDynamicRangeContent/EDRMetadata are API_UNAVAILABLE(tvos, watchos) —
+        // confirmed against the AppleTVOS SDK headers, not an assumption to revisit. tvOS's
+        // equivalent CAMetalLayer-drawable opt-in is CALayer.toneMapMode (tvOS 18+): its header
+        // explicitly names "PQ, HLG and extended-range contents for CALayer and CAMetalLayers".
         #if os(macOS)
         layer.wantsExtendedDynamicRangeContent = effectiveHDR
+        #endif
+        #if os(tvOS)
+        layer.toneMapMode = effectiveHDR ? .ifSupported : .automatic
         #endif
         layer.colorspace = effectiveHDR ? CGColorSpace(name: CGColorSpace.extendedLinearITUR_2020) : nil
     }
@@ -439,6 +444,9 @@ class MetalVideoRenderer {
             DispatchQueue.main.async { [weak layer] in
                 #if os(macOS)
                 layer?.wantsExtendedDynamicRangeContent = isFrameHDR
+                #endif
+                #if os(tvOS)
+                layer?.toneMapMode = isFrameHDR ? .ifSupported : .automatic
                 #endif
                 layer?.colorspace = isFrameHDR ? CGColorSpace(name: CGColorSpace.extendedLinearITUR_2020) : nil
             }

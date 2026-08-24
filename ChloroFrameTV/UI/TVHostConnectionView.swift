@@ -37,7 +37,7 @@ struct TVHostConnectionView: View {
         case appList(ServerInfo, [SunshineApp])
         case launching(SunshineApp)
         case negotiating(SunshineApp)
-        case streaming(SunshineApp, StreamTransport, MetalVideoRenderer, TVControllerTranslator, Int)  // Int = fps
+        case streaming(SunshineApp, StreamTransport, MetalVideoRenderer, TVControllerTranslator, StreamConfig)
         case failed(String)
     }
 
@@ -48,8 +48,8 @@ struct TVHostConnectionView: View {
 
     var body: some View {
         Group {
-            if case .streaming(let app, let transport, let renderer, let controller, let fps) = phase {
-                streamingView(app: app, transport: transport, renderer: renderer, controller: controller, fps: fps)
+            if case .streaming(let app, let transport, let renderer, let controller, let config) = phase {
+                streamingView(app: app, transport: transport, renderer: renderer, controller: controller, config: config)
             } else {
                 ZStack {
                     TVTheme.background.ignoresSafeArea()
@@ -170,12 +170,14 @@ struct TVHostConnectionView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
-    private func streamingView(app: SunshineApp, transport: StreamTransport, renderer: MetalVideoRenderer, controller: TVControllerTranslator, fps: Int) -> some View {
+    private func streamingView(app: SunshineApp, transport: StreamTransport, renderer: MetalVideoRenderer, controller: TVControllerTranslator, config: StreamConfig) -> some View {
         // TVStreamSurface disables focus interaction so the controller drives the host (not the
         // tvOS UI) and captures the Menu button as the exit. Teardown runs in onDisappear so it
         // fires on any pop, freeing the video socket for the next connect (the reconnect bug).
         ZStack {
-            TVStreamSurface(renderer: renderer, streamFps: fps, transport: transport,
+            TVStreamSurface(renderer: renderer, streamFps: config.fps,
+                            streamWidth: config.width, streamHeight: config.height,
+                            transport: transport,
                             onExit: { dismiss() },
                             onMenu: { showOverlay = true },
                             overlayActive: showOverlay)
@@ -305,7 +307,7 @@ struct TVHostConnectionView: View {
             // drive the host gamepad with it. A physical extended gamepad still passes through.
             controller.remoteAsGamepad = false
             controller.start()
-            phase = .streaming(app, transport, renderer, controller, config.fps)
+            phase = .streaming(app, transport, renderer, controller, config)
         } catch {
             await client.cancelApp(id: app.id)
             phase = .failed(error.localizedDescription)
