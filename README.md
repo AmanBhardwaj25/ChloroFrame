@@ -86,15 +86,22 @@ useful logs.
 Implemented, but still alpha:
 
 - Pairing with Apollo hosts and launching host apps.
-- H.264 and HEVC video decode through VideoToolbox.
-- HDR10/PQ streaming path for HEVC streams when the host app and display support
-  HDR.
+- H.264, HEVC, and AV1 video decode through VideoToolbox. AV1 is hardware-only: it
+  needs a Mac with a hardware AV1 decoder (M3 or later) and a host that advertises AV1,
+  and falls back to HEVC otherwise.
+- HDR10/PQ streaming path for HEVC and AV1 streams when the host app and display
+  support HDR (AV1 HDR also needs host AV1 Main10 encoding).
 - Metal rendering with NV12/P010 texture paths and display-link frame pacing.
 - RTP video assembly with FEC recovery.
 - Opus audio decode (vendored libopus by default, or macOS's built-in AudioToolbox
   decoder as an opt-in, 100%-Apple path) through CoreAudio pull playback, with an
   adaptive jitter buffer, clock-drift correction, crossfaded (click-free) buffer
   corrections, waveform-repeat underrun concealment, and Opus FEC/PLC gap concealment.
+- Automatic audio recovery when the output device or route changes (AirPods, headphones,
+  HDMI). If recovery gives up, a non-blocking banner offers a retry, and ⌃⌥⌘R resets
+  stream audio at any time.
+- Per-connection stream overrides for resolution, frame rate, and bitrate, including a
+  custom bitrate field (up to 500 Mbps, experimental).
 - Optional Wi-Fi airtime suppression while streaming via a privileged helper: brings
   `awdl0` down and reversibly suspends locationd's periodic positioning scan (both
   restored on stop), to reduce the periodic Wi-Fi stalls that cause audio dropouts.
@@ -107,9 +114,12 @@ Known gaps:
 - AWDL + locationd suppression now works, but requires a correctly signed helper that
   the user approves once in System Settings. During development, Debug rebuilds re-sign
   the binary and can staleness the helper registration (re-register from Settings to fix).
-- Audio output-device and config-change handling (AVAudioEngine reconfiguration)
-  and LAN audio encryption are not implemented. Some delivery jitter remains on noisy
-  Wi-Fi; it is now concealed click-free rather than eliminated.
+- ~~Audio output-device and config-change handling (AVAudioEngine reconfiguration)
+  and~~ LAN audio encryption is not implemented. (Output-device and route-change
+  recovery shipped in 1.4-alpha.) Some delivery jitter remains on noisy Wi-Fi; it is
+  now concealed click-free rather than eliminated.
+- AV1 HDR (Main10) is implemented but not yet verified against a live HDR host, and AV1
+  recovery from packet loss has not been tested under forced loss.
 - Controller/gamepad input works (GameController.framework), including remapping buttons and
   back paddles to gamepad combos or host keyboard chords; see controller-mapping.md. Current
   controller limitations:
@@ -180,10 +190,12 @@ a dependable daily-driver client.
 - Apple Silicon Mac. Intel Macs are not supported.
 - macOS with Xcode installed.
 - An Apollo host reachable on the local network.
-- For HDR: HEVC enabled, host HDR enabled, and an HDR-capable Mac display.
-- For future AWDL suppression work: a correctly signed app and privileged
-  helper. Public forks will need to update bundle identifiers, Team ID, and
-  signing settings.
+- For HDR: HEVC or AV1 selected, host HDR enabled, and an HDR-capable Mac display.
+- For AV1: a Mac with a hardware AV1 decoder (M3 or later) and a host GPU that
+  encodes AV1.
+- For ~~future AWDL suppression work~~ AWDL / locationd suppression: a correctly
+  signed app and privileged helper. Public forks will need to update bundle
+  identifiers, Team ID, and signing settings.
 
 The checked-in Xcode project currently targets macOS 26.1. Adjust the
 deployment target in Xcode if you want to experiment with older macOS versions.
@@ -198,24 +210,36 @@ For a command-line build that skips code signing:
 xcodebuild -project ChloroFrame.xcodeproj -scheme ChloroFrame CODE_SIGNING_ALLOWED=NO build
 ```
 
-That unsigned build is useful for source-level iteration. Future work on the
-AWDL helper requires a signed app/helper pair with matching bundle identifiers
-and requirement strings in:
+That unsigned build is useful for source-level iteration. ~~Future work on the
+AWDL helper requires~~ The AWDL helper requires a signed app/helper pair with
+matching bundle identifiers and requirement strings in:
 
 - `ChloroFrame.xcodeproj/project.pbxproj`
 - `ChloroFrame/Info.plist`
 - `ChloroFrameHelper/Info.plist`
 - `ChloroFrame/Resources/fullstacksandbox.com.ChloroFrame.Helper.plist`
 
+Unit tests (AV1 bitstream parsing and host codec capability bits) run with:
+
+```sh
+xcodebuild test -project ChloroFrame.xcodeproj -scheme ChloroFrame -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO
+```
+
 ## Repository Layout
 
 - `ChloroFrame/`: main SwiftUI macOS app.
 - `ChloroFrame/Network/`: Apollo HTTP, RTSP, ENet, RTP, and FEC code.
-- `ChloroFrame/Video/`: VideoToolbox decode and Metal presentation.
+- `ChloroFrame/Video/`: VideoToolbox decode (including AV1 sequence-header parsing) and
+  Metal presentation.
 - `ChloroFrame/Audio/`: Opus decode and CoreAudio playback.
-- `ChloroFrame/Input/`: keyboard and mouse input translation.
+- `ChloroFrame/Input/`: keyboard, mouse, and game controller input (GameController,
+  raw HID for extra buttons, per-controller configs).
+- `ChloroFrame/UI/`: SwiftUI host list, connection flow, settings, and controller setup.
 - `ChloroFrameHelper/`: privileged SMAppService daemon that brings `awdl0` down and
   suspends/resumes locationd during a stream (Wi-Fi airtime suppression).
+- `ChloroFrameTests/`: unit tests (AV1 OBU parsing, format descriptions, host codec bits).
+- `controller-mapping.md`: controller remapping design and status.
+- `PRIVACY.md`: privacy policy.
 - `clear_pairing.sh`: local utility for clearing stored pairing credentials.
 
 ## License

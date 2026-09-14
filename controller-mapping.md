@@ -6,9 +6,10 @@ decisions/feasibility as we go. Started 2026-06-18.*
 *Companion to keyboard-remapping.md. Where the two overlap (emitting host keyboard input),
 this doc reuses the keyboard packet path described there.*
 
-## Implementation status (2026-06-19)
+## Implementation status (2026-06-19, updated 2026-09-14)
 
-Built and verified end-to-end against a live Apollo host:
+Merged to main in PR #6 (2026-06-19) and shipped in 1.3-alpha. Built and verified end-to-end
+against a live Apollo host:
 
 - Opt-in controller setup window (Settings -> Input -> Controller), resizable.
 - Discovery + live readout + raw-HID diagnostic (GameController + IOHIDManager).
@@ -23,7 +24,10 @@ Built and verified end-to-end against a live Apollo host:
 
 Not yet done: controller motion/touchpad/rumble/battery, multiple simultaneous controllers,
 controller-arrival capabilities detail, and the chord-tap delay nuance (combos use plain
-all-held + consumption today).
+all-held + consumption today). The setup window also still loads, creates, and removes the
+config for the first HID controller rather than the controller selected in the picker
+(saving a learned button is guarded to the matching device, so a mismatch is dropped instead
+of written to the wrong file).
 
 ## Goal
 
@@ -121,7 +125,9 @@ and label at a time.
 A **binding** maps one **source** (one or more known buttons) to one **action**.
 
 - **Source:** one or more *known* buttons, each either a macOS-known GameController element (by
-  `localizedName`) or a user-known learned button (by its learned id / label). A source with more
+  ~~`localizedName`~~ canonical `GamepadButton` id, or stable element name for extras) or a
+  user-known learned button (by ~~its learned id / label~~ device key + raw-HID bit key; the
+  label is display-only). A source with more
   than one element is a **source combo** (a chord): the binding triggers only when all of its
   elements are held at once. Because learned buttons are bindable sources, a combo can mix kinds,
   e.g. **"Back Paddle 1" + "Button A" -> Alt+Tab on the host**.
@@ -137,7 +143,9 @@ A **binding** maps one **source** (one or more known buttons) to one **action**.
     completes. If the combo completes, fire the combo and suppress the standalone output. If the
     window elapses or the participant is released first, fire the standalone output then. This is
     the mod-tap / chord pattern used by Karabiner and QMK. The delay only applies to elements that
-    actually lead a combo binding, so ordinary buttons stay latency-free.
+    actually lead a combo binding, so ordinary buttons stay latency-free. **Not implemented
+    yet** (see Implementation status): today a combo fires only when all sources are held on
+    the same poll tick, so a fast standalone press can leak first.
 
 - **Action:** what to do when that source is held. One of:
   1. **Gamepad button(s):** set one or more standard host gamepad buttons. One button is the
@@ -283,28 +291,36 @@ controller API on macOS (Apple Developer Forums thread 812774). Every working ma
 
 ## 10. Components (as built)
 
-- **ControllerInput** — GameController read/observe layer: discovery, live values, listen, combo
-  capture, multi-controller selection, and the selected pad's macOS-known buttons. Its
-  `lastEvent.at` is the GC-activity signal the learn flow uses to filter known inputs.
-- **HIDProbe** — `IOHIDManager` diagnostic in the setup page (element scan + raw-report dump with
+- **ControllerInput**: GameController read/observe layer: discovery, live values, listen, combo
+  capture, multi-controller selection, and the selected pad's known controls (canonical
+  `GamepadButton`s plus other macOS-exposed buttons). Its `lastEvent.at` is the GC-activity
+  signal the learn flow uses to filter known inputs.
+- **HIDProbe**: `IOHIDManager` diagnostic in the setup page (element scan + raw-report dump with
   analog-noise filtering) and the **learn flow** (single rising bit, no GC event, skip
-  already-learned). Exposes device VID/PID.
-- **RawHIDBitReader** — slim runtime `IOHIDManager` reader (separate from HIDProbe) that keeps the
-  latest report bytes per reportID so the translator can poll learned-button bits while streaming.
-- **ControllerConfig + ControllerConfigStore** — per-controller JSON file `<VID>_<PID>.json`
+  already-learned). Exposes device VID/PID. Report buffers are 256 bytes.
+- **RawHIDBitReader**: slim runtime `IOHIDManager` reader (separate from HIDProbe) that keeps the
+  latest report bytes per ~~reportID~~ device key (VID:PID) and reportID, so the translator can
+  poll learned-button bits while streaming and another device with the same report ID cannot
+  overwrite them. Device matching/removal callbacks pick up controllers connected mid-stream.
+- **ControllerConfig + ControllerConfigStore**: per-controller JSON file `<VID>_<PID>.json`
   holding hardware id, names, display name, macOS buttons, learned buttons, and bindings. A
   registry (UserDefaults) links a device's hardware id to its file path; default dir is
   `~/Library/Application Support/ChloroFrame/Controllers`. Supports import (link any file) and
   remove (unlink; file stays). Replaces the old UserDefaults stores.
-- **ControllerBinding / BindingSource / BindingTarget / GamepadButton / KeyToken** — the binding
-  model. A `BindingSource` is `.gamepad(name:)` (GC element) or `.learned(...)` (raw-HID button).
-- **ControllerWire** — exact host wire encoders (MULTI_CONTROLLER + arrival), GamepadButton ->
+- **ControllerBinding / BindingSource / BindingTarget / GamepadButton / KeyToken**: the binding
+  model. A `BindingSource` is ~~`.gamepad(name:)` (GC element) or `.learned(...)` (raw-HID
+  button)~~ `.gamepad(control:)` (canonical control), `.macos(elementName:displayName:symbolName:)`
+  (other GameController button), or `.learned(deviceKey:bitKey:label:)` (raw-HID button). The
+  translator resolves sources by identity, never by label.
+- **ControllerWire**: exact host wire encoders (MULTI_CONTROLLER + arrival), GamepadButton ->
   host flag map, key token -> Win32 VK map, channels. Transcribed from moonlight-common-c.
-- **ControllerTranslator** — the rebind engine. Polls GameController + RawHIDBitReader at 120 Hz,
+- **ControllerTranslator**: the rebind engine. Polls GameController + RawHIDBitReader at 120 Hz,
   applies bindings (largest-combo-first, consumed sources), builds the level-based gamepad state
   (sent on change) and edge-based keyboard events (ref-counted). Created next to InputHandler in
   HostConnectionView, stored on StreamState, started on activate and released/stopped on teardown.
-- **HostKeyboardView** — the 2D on-screen Windows keyboard picker (section 7, option b). Replaced
+  Pauses and releases everything when the app resigns active, and reloads the config when a
+  controller connects.
+- **HostKeyboardView**: the 2D on-screen Windows keyboard picker (section 7, option b). Replaced
   the Mac-keyboard chord capture (`HostChordCapture`, removed).
 
 ---
@@ -336,6 +352,11 @@ stop, disconnect, controller disconnect, and app focus loss:
 
 Mirrors InputHandler.releaseAll, ideally sharing the same release bookkeeping once the send
 primitive is factored out.
+
+Status: implemented. `ControllerTranslator.releaseAll()` runs on stream stop/disconnect (from
+`StreamState.deactivate`, before `transport.stop()`) and on app focus loss (the translator also
+stops driving the host until the app is active again). A controller disconnect key-ups held keys
+and sends a zeroed, inactive pad. The bookkeeping is still separate from InputHandler's.
 
 ---
 
@@ -375,7 +396,8 @@ Nothing requires host changes. This is now wired into the stream and verified on
    (paddle -> A, paddle -> Alt+Tab without macOS interception) confirmed on a live Apollo host.
 
 Remaining/next: persistence robustness polish, motion/touchpad/rumble/battery, multiple
-controllers, controller-arrival capabilities, and the chord-tap delay nuance.
+controllers, controller-arrival capabilities, the chord-tap delay nuance, and tying the setup
+window's config operations to the selected controller instead of the first HID device.
 
 ---
 
