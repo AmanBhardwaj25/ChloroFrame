@@ -2,5 +2,17 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<!-- GameStream's discovery/pairing port is plain HTTP by protocol (Apollo/Sunshine has
+		     no TLS option there); every request this app makes targets a host the user typed
+		     in themselves, never a third party. Without this, ATS blocks plain HTTP even to a
+		     Tailscale IP literal (100.64.0.0/10 is a CGNAT range, RFC 6598, not one of the
+		     classic RFC 1918 private ranges macOS's default local-network exemption covers,
+		     unlike a LAN address), confirmed by a live -1022 ATS error on 2026-09-14. See
+		     design/tailscale-connection-fix-plan.md Phase 4. -->
+		<key>NSAllowsArbitraryLoads</key>
+		<true/>
+	</dict>
 </dict>
 </plist>

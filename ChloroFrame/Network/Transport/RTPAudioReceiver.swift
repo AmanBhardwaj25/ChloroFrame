@@ -42,26 +42,40 @@ final class RTPAudioReceiver {
     var apparentLoss:     Int { _apparentLoss.load(ordering: .relaxed) }
     var reorderDiscarded: Int { _reorderDiscarded.load(ordering: .relaxed) }
 
+    enum ReceiverError: Error {
+        case cancelled
+    }
+
     // MARK: - Lifecycle
 
     /// Binds the UDP socket and sends the first SS_PING before returning.
     /// Callers must await this so Start A/B is sent only after the socket is ready.
-    func start(host: String, serverPort: UInt16, localPort: UInt16, pingPayload: String) async throws {
+    /// - Parameter requiredInterface: when non-nil, pins the socket to this interface (used to
+    ///   keep media off awdl0 when Wi-Fi is actually the route to the host). nil means do not
+    ///   pin — the route goes elsewhere (VPN, Ethernet, ...) and forcing it onto Wi-Fi would
+    ///   send packets nowhere. See RouteResolver / design/tailscale-connection-fix-plan.md.
+    /// - Parameter family: AF_INET or AF_INET6, from the resolved route. Selects the wildcard
+    ///   local endpoint address; defaults to AF_INET so existing IPv4-only callers are
+    ///   unaffected.
+    func start(host: String, serverPort: UInt16, localPort: UInt16, pingPayload: String,
+               requiredInterface: NWInterface? = nil, family: Int32 = AF_INET) async throws {
         rlog.info("receiver start localPort=\(localPort) serverPort=\(serverPort)")
 
         let params = NWParameters.udp
         params.serviceClass = .interactiveVoice
         params.allowLocalEndpointReuse = true
+        let wildcardHost: NWEndpoint.Host = family == AF_INET6 ? .init("::") : .init("0.0.0.0")
         params.requiredLocalEndpoint = .hostPort(
-            host: .init("0.0.0.0"),
+            host: wildcardHost,
             port: .init(rawValue: localPort)!
         )
-        // macOS pins the audio socket to Wi-Fi so replies can't route over awdl0.
-        // tvOS drops interface discovery (port plan 6.4), removing the NetworkMonitor
-        // dependency from the tvOS build.
+        // macOS pins the audio socket to the caller-resolved interface (only when it's
+        // actually Wi-Fi, see the requiredInterface doc comment above) so replies can't route
+        // over awdl0. tvOS drops interface discovery (port plan 6.4), removing the
+        // NetworkMonitor dependency from the tvOS build.
         #if os(macOS)
-        if let iface = NetworkMonitor.shared.wifiInterface {
-            params.requiredInterface = iface
+        if let requiredInterface {
+            params.requiredInterface = requiredInterface
         }
         #endif
 
@@ -73,19 +87,57 @@ final class RTPAudioReceiver {
 
         // Await the socket reaching .ready so the caller knows the port is bound
         // before sending Start A/B (which triggers the server to begin streaming).
+        // A path that never satisfies (e.g. requiredInterface has no route to the
+        // destination) surfaces as .waiting and would otherwise hang here forever — give it
+        // a short grace period in case it's transient (interface still coming up), then fail.
+        //
+        // resumeOnce always hops onto resolveQueue (a dedicated serial queue) before touching
+        // `resumed`, so the flag is single-queue-confined even though it can be set from two
+        // independent triggers: NWConnection's own callback stream (serialized by NWConnection
+        // onto whatever queue c.start(queue:) was given) and the timeout DispatchWorkItem
+        // (scheduled on resolveQueue directly). Without this, a state-change resume racing the
+        // timeout's read-modify-write of `resumed` would be a real data race, not just
+        // theoretical — the two run on genuinely different execution contexts.
         try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, any Error>) in
+            let resolveQueue = DispatchQueue(label: "chloroframe.audiorx.connect-resolve")
+            var resumed = false
+            let resumeOnce: (Result<Void, Error>) -> Void = { result in
+                resolveQueue.async {
+                    guard !resumed else { return }
+                    resumed = true
+                    switch result {
+                    case .success:        cont.resume()
+                    case .failure(let e): cont.resume(throwing: e)
+                    }
+                }
+            }
+            var waitingWorkItem: DispatchWorkItem?
             c.stateUpdateHandler = { [weak self, weak c] state in
                 switch state {
                 case .ready:
+                    waitingWorkItem?.cancel()
                     c?.stateUpdateHandler = nil
                     rlog.info("UDP socket ready")
                     self?.startReceive()
                     self?.startPing(payload: pingPayload)
-                    cont.resume()
+                    resumeOnce(.success(()))
                 case .failed(let err):
+                    waitingWorkItem?.cancel()
                     rlog.error("UDP socket failed: \(err)")
                     c?.stateUpdateHandler = nil
-                    cont.resume(throwing: err)
+                    resumeOnce(.failure(err))
+                case .waiting(let err):
+                    guard waitingWorkItem == nil else { break }
+                    rlog.error("UDP socket waiting: \(err) — will fail if unresolved in 3s")
+                    let work = DispatchWorkItem { [weak c] in
+                        c?.cancel()
+                        resumeOnce(.failure(err))
+                    }
+                    waitingWorkItem = work
+                    resolveQueue.asyncAfter(deadline: .now() + 3, execute: work)
+                case .cancelled:
+                    waitingWorkItem?.cancel()
+                    resumeOnce(.failure(ReceiverError.cancelled))
                 default: break
                 }
             }
