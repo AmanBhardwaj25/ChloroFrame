@@ -13,10 +13,23 @@ import Observation
 
 // MARK: - Model
 
-struct Host: Identifiable, Codable, Hashable {
+// nonisolated: pure value data (used by SunshineHTTPClient off the main actor, and decoded/
+// encoded directly in unit tests) with no MainActor-specific behavior of its own. Without this,
+// the app target's default MainActor isolation (SWIFT_DEFAULT_ACTOR_ISOLATION) makes Host's
+// synthesized Codable conformance MainActor-isolated too, which the test target (no such
+// default) can't use from a plain nonisolated test method.
+nonisolated struct Host: Identifiable, Codable, Hashable {
     var id = UUID()
     var name: String
     var address: String
+    // Optional fallback address (e.g. a Tailscale/VPN address for the same PC), tried if the
+    // primary doesn't respond. Must stay Optional with an explicit `= nil` default, not a
+    // defaulted String — Swift's synthesized Decodable does not honor a property's default
+    // value for a missing JSON key, only Optional does, so a non-optional field here would fail
+    // to decode every host saved before this existed. The `= nil` also keeps the synthesized
+    // memberwise initializer treating it as omittable. See design/tailscale-connection-fix-
+    // plan.md Phase 6.
+    var secondaryAddress: String? = nil
     var port: UInt16 = 47989
 }
 
@@ -31,8 +44,19 @@ class HostManager {
 
     init() { load() }
 
+    func add(_ host: Host) {
+        hosts.append(host)
+        persist()
+    }
+
+    // Convenience overload for callers that don't build a Host directly (TVContentView).
     func add(name: String, address: String, port: UInt16) {
-        hosts.append(Host(name: name, address: address, port: port))
+        add(Host(name: name, address: address, port: port))
+    }
+
+    func update(_ host: Host) {
+        guard let idx = hosts.firstIndex(where: { $0.id == host.id }) else { return }
+        hosts[idx] = host
         persist()
     }
 

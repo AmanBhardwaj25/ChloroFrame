@@ -17,6 +17,7 @@ struct ContentView: View {
     @State private var streamState    = StreamState()
     @State private var showAddressEntry = false
     @State private var connectingHost: Host?
+    @State private var editingHost: Host?
     @State private var showStats      = false
     @State private var showControls   = false
     @State private var showControlsHelp = false
@@ -35,8 +36,13 @@ struct ContentView: View {
         }
         .background(Color("CFBackground"))
         .sheet(isPresented: $showAddressEntry) {
-            AddHostSheet { name, address, port in
-                hostManager.add(name: name, address: address, port: port)
+            AddHostSheet { host in
+                hostManager.add(host)
+            }
+        }
+        .sheet(item: $editingHost) { host in
+            AddHostSheet(editing: host) { updated in
+                hostManager.update(updated)
             }
         }
         .sheet(item: $connectingHost) { host in
@@ -249,6 +255,8 @@ struct ContentView: View {
                         ForEach(hostManager.hosts) { host in
                             HostCard(host: host) {
                                 connectingHost = host
+                            } onEdit: {
+                                editingHost = host
                             } onRemove: {
                                 hostManager.remove(host)
                             }
@@ -315,6 +323,7 @@ struct DiscoveryButton: View {
 struct HostCard: View {
     let host: Host
     let onConnect: () -> Void
+    let onEdit: () -> Void
     let onRemove: () -> Void
 
     @State private var isHovered = false
@@ -349,7 +358,13 @@ struct HostCard: View {
         .animation(.easeInOut(duration: 0.12), value: isHovered)
         .contextMenu {
             Text("\(host.address):\(host.port)")
+            if let secondary = host.secondaryAddress, !secondary.isEmpty {
+                Text("Secondary: \(secondary)")
+            }
             Divider()
+            Button { onEdit() } label: {
+                Label("Edit Host", systemImage: "pencil")
+            }
             Button(role: .destructive) { onRemove() } label: {
                 Label("Remove Host", systemImage: "trash")
             }
@@ -362,11 +377,23 @@ struct HostCard: View {
 
 struct AddHostSheet: View {
     @Environment(\.dismiss) private var dismiss
-    @State private var name = ""
-    @State private var address = ""
-    @State private var port = 47989
+    @State private var name: String
+    @State private var address: String
+    @State private var secondaryAddress: String
+    @State private var port: Int
 
-    let onAdd: (String, String, UInt16) -> Void
+    // The host being edited (its id is preserved on save); nil when adding a new host.
+    let editing: Host?
+    let onSave: (Host) -> Void
+
+    init(editing: Host? = nil, onSave: @escaping (Host) -> Void) {
+        self.editing = editing
+        self.onSave  = onSave
+        _name             = State(initialValue: editing?.name ?? "")
+        _address          = State(initialValue: editing?.address ?? "")
+        _secondaryAddress = State(initialValue: editing?.secondaryAddress ?? "")
+        _port             = State(initialValue: Int(editing?.port ?? 47989))
+    }
 
     private var canSubmit: Bool {
         !name.trimmingCharacters(in: .whitespaces).isEmpty &&
@@ -375,13 +402,15 @@ struct AddHostSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
-            Text("Add Host")
+            Text(editing == nil ? "Add Host" : "Edit Host")
                 .font(.title2)
                 .fontWeight(.semibold)
 
             Form {
                 TextField("Name", text: $name)
                 TextField("IP Address or Hostname", text: $address)
+                TextField("Secondary Address (optional)", text: $secondaryAddress)
+                    .help("A second way to reach this host, such as a Tailscale address. Tried if the primary address doesn't respond.")
                 TextField("Port", value: $port, format: .number)
             }
             .formStyle(.grouped)
@@ -390,12 +419,17 @@ struct AddHostSheet: View {
                 Button("Cancel") { dismiss() }
                     .keyboardShortcut(.cancelAction)
                 Spacer()
-                Button("Add") {
-                    onAdd(
-                        name.trimmingCharacters(in: .whitespaces),
-                        address.trimmingCharacters(in: .whitespaces),
-                        UInt16(clamping: port)
-                    )
+                Button(editing == nil ? "Add" : "Save") {
+                    var host = editing ?? Host(name: "", address: "")
+                    host.name    = name.trimmingCharacters(in: .whitespaces)
+                    // normalized strips a pasted "[fd7a::1]" down to "fd7a::1" — the pipeline
+                    // works with unbracketed literals throughout; brackets get added back only
+                    // where URL/header/SDP syntax needs them (HostAddress.urlHost).
+                    host.address = HostAddress.normalized(address)
+                    let trimmedSecondary = HostAddress.normalized(secondaryAddress)
+                    host.secondaryAddress = trimmedSecondary.isEmpty ? nil : trimmedSecondary
+                    host.port = UInt16(clamping: port)
+                    onSave(host)
                     dismiss()
                 }
                 .keyboardShortcut(.defaultAction)

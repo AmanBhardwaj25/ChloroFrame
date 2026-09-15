@@ -339,116 +339,191 @@ final class SunshineHTTPClient: NSObject {
                        kSecAttrLabel as String: kCertLabel] as CFDictionary)
     }
 
+    // MARK: - Address fallback (design/tailscale-connection-fix-plan.md Phase 6)
+
+    // Addresses to try, in order: whichever address last succeeded on this client instance
+    // (if any, see `lastGoodAddress` below), then the primary, then the secondary if one is
+    // set and differs from the primary (e.g. a Tailscale/VPN address for a host also reachable
+    // on the LAN — see HostConnectionView's saved Host model).
+    private var candidateAddresses: [String] {
+        var addrs = [host.address]
+        if let secondary = host.secondaryAddress, !secondary.isEmpty, secondary != host.address {
+            addrs.append(secondary)
+        }
+        if let good = lastGoodAddress, let idx = addrs.firstIndex(of: good), idx != 0 {
+            addrs.remove(at: idx)
+            addrs.insert(good, at: 0)
+        }
+        return addrs
+    }
+
+    // The address that answered the most recent successful call. A single SunshineHTTPClient
+    // instance lives for one whole connect flow (serverinfo -> applist -> launch, all on the
+    // same instance, see HostConnectionView), so without this every one of those calls would
+    // independently pay the full primary-address timeout before falling back to the secondary
+    // whenever the primary is unroutable from the client (e.g. the client's own Tailscale is
+    // disconnected) -- measured as a ~15s stall across just 3 calls. Remembering the winner
+    // and trying it first collapses that to one slow call. We still fall back onto the full
+    // candidate list if the remembered address stops working (host IP could change mid-session).
+    private var lastGoodAddress: String?
+
+    // Timeout given to every candidate except the last one tried. A dead address (no route from
+    // the client at all, e.g. the client's own Tailscale is disconnected so a Tailscale primary
+    // address just black-holes into the default gateway) doesn't fail fast at the socket level —
+    // it silently eats the full request timeout. Keeping that short here, and reserving the
+    // session's normal timeout for the final (most-likely-to-work, or only) candidate, is what
+    // actually bounds the fallback cost instead of just moving it around.
+    private static let probeTimeout: TimeInterval = 3
+
+    // Tries `body` against each candidate address in order, moving to the next only when the
+    // attempt fails with .unreachable (could not even connect). Any other error — a server that
+    // responded but rejected the request — surfaces immediately without trying the next address,
+    // since a different address wouldn't fix a server-side rejection. `body` receives the
+    // per-attempt timeout to apply to its request: short for a probe, the caller's full timeout
+    // for the last (or only) candidate.
+    private func withAddressFallback<T>(_ body: (String, TimeInterval) async throws -> T) async throws -> T {
+        var lastError: Error = SunshineError.unreachable
+        let addrs = candidateAddresses
+        for (idx, addr) in addrs.enumerated() {
+            let isLast = idx == addrs.count - 1
+            do {
+                let result = try await body(addr, isLast ? 0 : Self.probeTimeout)
+                lastGoodAddress = addr
+                return result
+            } catch SunshineError.unreachable {
+                lastError = SunshineError.unreachable
+                continue
+            }
+        }
+        throw lastError
+    }
+
     // MARK: - HTTP
 
     // All pre-pairing API calls (serverinfo, pair phases 1-4) use plain HTTP on the
     // configured port (47989). mTLS is not needed and would fail before pairing.
     private func get(_ path: String, params: [String: String] = [:]) async throws -> Data {
-        var comps        = URLComponents()
-        comps.scheme     = "http"
-        comps.host       = host.address
-        comps.port       = Int(host.port)
-        comps.path       = "/\(path)"
-        comps.queryItems = [URLQueryItem(name: "uniqueid", value: uniqueDeviceId)]
-            + params.map { URLQueryItem(name: $0.key, value: $0.value) }
-        guard let url = comps.url else { throw SunshineError.unreachable }
-        AppLogger.shared.log("GET \(url.absoluteString)", "HTTP", path)
-        do {
-            let (data, response) = try await urlSession.data(from: url)
-            guard let http = response as? HTTPURLResponse else { throw SunshineError.unreachable }
-            AppLogger.shared.logBlock("← \(http.statusCode) (\(data.count)B)",
-                body: String(data: data, encoding: .utf8) ?? "<binary>", "HTTP", path)
-            guard http.statusCode == 200 else { throw SunshineError.httpError(http.statusCode) }
-            return data
-        } catch let e as SunshineError {
-            AppLogger.shared.log("ERROR \(e.localizedDescription)", "HTTP", path)
-            throw e
-        } catch {
-            AppLogger.shared.log("ERROR unreachable: \(error.localizedDescription)", "HTTP", path)
-            throw SunshineError.unreachable
+        try await withAddressFallback { addr, timeout in
+            var comps        = URLComponents()
+            comps.scheme     = "http"
+            comps.host       = HostAddress.urlHost(addr)
+            comps.port       = Int(host.port)
+            comps.path       = "/\(path)"
+            comps.queryItems = [URLQueryItem(name: "uniqueid", value: uniqueDeviceId)]
+                + params.map { URLQueryItem(name: $0.key, value: $0.value) }
+            guard let url = comps.url else { throw SunshineError.unreachable }
+            var request = URLRequest(url: url)
+            if timeout > 0 { request.timeoutInterval = timeout }
+            AppLogger.shared.log("GET \(url.absoluteString)", "HTTP", path)
+            do {
+                let (data, response) = try await urlSession.data(for: request)
+                guard let http = response as? HTTPURLResponse else { throw SunshineError.unreachable }
+                AppLogger.shared.logBlock("← \(http.statusCode) (\(data.count)B)",
+                    body: String(data: data, encoding: .utf8) ?? "<binary>", "HTTP", path)
+                guard http.statusCode == 200 else { throw SunshineError.httpError(http.statusCode) }
+                return data
+            } catch let e as SunshineError {
+                AppLogger.shared.log("ERROR \(e.localizedDescription)", "HTTP", path)
+                throw e
+            } catch {
+                AppLogger.shared.log("ERROR unreachable: \(error.localizedDescription)", "HTTP", path)
+                throw SunshineError.unreachable
+            }
         }
     }
 
     // Post-pairing calls (applist, launch) go over HTTPS and require mTLS.
     private func getHTTPS(_ path: String, params: [String: String] = [:]) async throws -> Data {
         if _cachedIdentity == nil { loadAndCacheIdentity() }
-        var comps        = URLComponents()
-        comps.scheme     = "https"
-        comps.host       = host.address
-        comps.port       = Int(httpsPort)
-        comps.path       = "/\(path)"
-        comps.queryItems = [URLQueryItem(name: "uniqueid", value: uniqueDeviceId)]
-            + params.map { URLQueryItem(name: $0.key, value: $0.value) }
-        guard let url = comps.url else { throw SunshineError.unreachable }
-        AppLogger.shared.log("GET (HTTPS mTLS) \(url.absoluteString)  identity=\(_cachedIdentity != nil ? "present" : "MISSING")", "HTTP", path)
-        do {
-            let (data, response) = try await urlSession.data(from: url)
-            guard let http = response as? HTTPURLResponse else { throw SunshineError.unreachable }
-            AppLogger.shared.logBlock("← \(http.statusCode) (\(data.count)B)",
-                body: String(data: data, encoding: .utf8) ?? "<binary>", "HTTP", path)
-            guard http.statusCode == 200 else { throw SunshineError.httpError(http.statusCode) }
-            return data
-        } catch let e as SunshineError {
-            AppLogger.shared.log("ERROR \(e.localizedDescription)", "HTTP", path)
-            throw e
-        } catch {
-            AppLogger.shared.log("ERROR unreachable: \(error.localizedDescription)", "HTTP", path)
-            throw SunshineError.unreachable
+        return try await withAddressFallback { addr, timeout in
+            var comps        = URLComponents()
+            comps.scheme     = "https"
+            comps.host       = HostAddress.urlHost(addr)
+            comps.port       = Int(httpsPort)
+            comps.path       = "/\(path)"
+            comps.queryItems = [URLQueryItem(name: "uniqueid", value: uniqueDeviceId)]
+                + params.map { URLQueryItem(name: $0.key, value: $0.value) }
+            guard let url = comps.url else { throw SunshineError.unreachable }
+            var request = URLRequest(url: url)
+            if timeout > 0 { request.timeoutInterval = timeout }
+            AppLogger.shared.log("GET (HTTPS mTLS) \(url.absoluteString)  identity=\(_cachedIdentity != nil ? "present" : "MISSING")", "HTTP", path)
+            do {
+                let (data, response) = try await urlSession.data(for: request)
+                guard let http = response as? HTTPURLResponse else { throw SunshineError.unreachable }
+                AppLogger.shared.logBlock("← \(http.statusCode) (\(data.count)B)",
+                    body: String(data: data, encoding: .utf8) ?? "<binary>", "HTTP", path)
+                guard http.statusCode == 200 else { throw SunshineError.httpError(http.statusCode) }
+                return data
+            } catch let e as SunshineError {
+                AppLogger.shared.log("ERROR \(e.localizedDescription)", "HTTP", path)
+                throw e
+            } catch {
+                AppLogger.shared.log("ERROR unreachable: \(error.localizedDescription)", "HTTP", path)
+                throw SunshineError.unreachable
+            }
         }
     }
 
     // Pairing requests (phases 1-4) use pairingSession (long inactivity timeout for phase 1 block).
     private func pairGet(_ path: String, params: [String: String] = [:]) async throws -> Data {
-        var comps        = URLComponents()
-        comps.scheme     = "http"
-        comps.host       = host.address
-        comps.port       = Int(host.port)
-        comps.path       = "/\(path)"
-        comps.queryItems = [URLQueryItem(name: "uniqueid", value: uniqueDeviceId)]
-            + params.map { URLQueryItem(name: $0.key, value: $0.value) }
-        guard let url = comps.url else { throw SunshineError.unreachable }
-        AppLogger.shared.log("GET (pair) \(url.absoluteString)", "HTTP", path)
-        do {
-            let (data, response) = try await pairingSession.data(from: url)
-            guard let http = response as? HTTPURLResponse else { throw SunshineError.unreachable }
-            AppLogger.shared.logBlock("← \(http.statusCode) (\(data.count)B)",
-                body: String(data: data, encoding: .utf8) ?? "<binary>", "HTTP", path)
-            guard http.statusCode == 200 else { throw SunshineError.httpError(http.statusCode) }
-            return data
-        } catch let e as SunshineError {
-            AppLogger.shared.log("ERROR \(e.localizedDescription)", "HTTP", path)
-            throw e
-        } catch {
-            AppLogger.shared.log("ERROR unreachable: \(error.localizedDescription)", "HTTP", path)
-            throw SunshineError.unreachable
+        try await withAddressFallback { addr, timeout in
+            var comps        = URLComponents()
+            comps.scheme     = "http"
+            comps.host       = HostAddress.urlHost(addr)
+            comps.port       = Int(host.port)
+            comps.path       = "/\(path)"
+            comps.queryItems = [URLQueryItem(name: "uniqueid", value: uniqueDeviceId)]
+                + params.map { URLQueryItem(name: $0.key, value: $0.value) }
+            guard let url = comps.url else { throw SunshineError.unreachable }
+            var request = URLRequest(url: url)
+            if timeout > 0 { request.timeoutInterval = timeout }
+            AppLogger.shared.log("GET (pair) \(url.absoluteString)", "HTTP", path)
+            do {
+                let (data, response) = try await pairingSession.data(for: request)
+                guard let http = response as? HTTPURLResponse else { throw SunshineError.unreachable }
+                AppLogger.shared.logBlock("← \(http.statusCode) (\(data.count)B)",
+                    body: String(data: data, encoding: .utf8) ?? "<binary>", "HTTP", path)
+                guard http.statusCode == 200 else { throw SunshineError.httpError(http.statusCode) }
+                return data
+            } catch let e as SunshineError {
+                AppLogger.shared.log("ERROR \(e.localizedDescription)", "HTTP", path)
+                throw e
+            } catch {
+                AppLogger.shared.log("ERROR unreachable: \(error.localizedDescription)", "HTTP", path)
+                throw SunshineError.unreachable
+            }
         }
     }
 
     // Phase 5 (pairchallenge) must go over HTTPS — uses pairingSession for consistency.
     private func pairGetHTTPS(_ path: String, params: [String: String] = [:]) async throws -> Data {
         if _cachedIdentity == nil { loadAndCacheIdentity() }
-        var comps        = URLComponents()
-        comps.scheme     = "https"
-        comps.host       = host.address
-        comps.port       = Int(httpsPort)
-        comps.path       = "/\(path)"
-        comps.queryItems = [URLQueryItem(name: "uniqueid", value: uniqueDeviceId)]
-            + params.map { URLQueryItem(name: $0.key, value: $0.value) }
-        guard let url = comps.url else { throw SunshineError.unreachable }
-        AppLogger.shared.log("GET (pair HTTPS mTLS) \(url.absoluteString)  identity=\(_cachedIdentity != nil ? "present" : "MISSING")", "HTTP", path)
-        do {
-            let (data, response) = try await pairingSession.data(from: url)
-            guard let http = response as? HTTPURLResponse else { throw SunshineError.unreachable }
-            AppLogger.shared.logBlock("← \(http.statusCode) (\(data.count)B)",
-                body: String(data: data, encoding: .utf8) ?? "<binary>", "HTTP", path)
-            guard http.statusCode == 200 else { throw SunshineError.httpError(http.statusCode) }
-            return data
-        } catch let e as SunshineError {
-            AppLogger.shared.log("ERROR \(e.localizedDescription)", "HTTP", path)
-            throw e
-        } catch {
-            AppLogger.shared.log("ERROR unreachable: \(error.localizedDescription)", "HTTP", path)
-            throw SunshineError.unreachable
+        return try await withAddressFallback { addr, timeout in
+            var comps        = URLComponents()
+            comps.scheme     = "https"
+            comps.host       = HostAddress.urlHost(addr)
+            comps.port       = Int(httpsPort)
+            comps.path       = "/\(path)"
+            comps.queryItems = [URLQueryItem(name: "uniqueid", value: uniqueDeviceId)]
+                + params.map { URLQueryItem(name: $0.key, value: $0.value) }
+            guard let url = comps.url else { throw SunshineError.unreachable }
+            var request = URLRequest(url: url)
+            if timeout > 0 { request.timeoutInterval = timeout }
+            AppLogger.shared.log("GET (pair HTTPS mTLS) \(url.absoluteString)  identity=\(_cachedIdentity != nil ? "present" : "MISSING")", "HTTP", path)
+            do {
+                let (data, response) = try await pairingSession.data(for: request)
+                guard let http = response as? HTTPURLResponse else { throw SunshineError.unreachable }
+                AppLogger.shared.logBlock("← \(http.statusCode) (\(data.count)B)",
+                    body: String(data: data, encoding: .utf8) ?? "<binary>", "HTTP", path)
+                guard http.statusCode == 200 else { throw SunshineError.httpError(http.statusCode) }
+                return data
+            } catch let e as SunshineError {
+                AppLogger.shared.log("ERROR \(e.localizedDescription)", "HTTP", path)
+                throw e
+            } catch {
+                AppLogger.shared.log("ERROR unreachable: \(error.localizedDescription)", "HTTP", path)
+                throw SunshineError.unreachable
+            }
         }
     }
 
