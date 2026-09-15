@@ -31,9 +31,15 @@ final class StreamTransport {
     var onENetDisconnect: (() -> Void)?
     var onVideoTexture:   ((CVPixelBuffer, CMTime) -> Void)?
     var onClockReset:     (() -> Void)?
+    // Fires once, ~5s after Start A/B, if no video packet has arrived by then (Phase 5). A
+    // connected-but-silent path (control channel up, UDP blocked somewhere) would otherwise
+    // just sit there with no feedback until the control connection eventually times out.
+    var onNoMediaReceived: (() -> Void)?
 
     let stats = StreamStatsCollector()
     private var streamActivity: NSObjectProtocol?
+    private var noMediaWatchdog: DispatchWorkItem?
+    private let watchdogQueue = DispatchQueue(label: "chloroframe.streamtransport.watchdog")
 
     init(descriptor: StreamDescriptor, config: StreamConfig, rikey: Data) {
         self.desc = descriptor
@@ -111,6 +117,10 @@ final class StreamTransport {
         let pinNWInterface: NWInterface? = nil
         let pinToWiFi = false
         #endif
+
+        stats.pathInterface  = desc.route?.interfaceName ?? "unknown"
+        stats.pathClass      = desc.networkClass == .local ? "local" : "remote"
+        stats.pathPacketSize = desc.videoPacketSize
         #if DEBUG
         if let route = desc.route {
             Swift.print("[ChloroFrame][transport] route dest=\(route.destination) "
@@ -181,6 +191,18 @@ final class StreamTransport {
         enet.sendControl(type: 0x0302, payload: [0x00, 0x00])
         enet.sendControl(type: 0x0307, payload: [0x00])
 
+        // No-media watchdog (Phase 5): if the control channel is healthy but no video packet
+        // shows up within 5s of Start A/B, the network path is silently dropping UDP somewhere
+        // (a not-uncommon symptom on a VPN/Tailscale path even after HTTP/RTSP succeeded, since
+        // those go over TCP). Surface that specifically instead of leaving the user looking at a
+        // black screen with no explanation until the control connection eventually gives up.
+        let watchdog = DispatchWorkItem { [weak self] in
+            guard let self, self.stats.packetsReceivedSoFar == 0 else { return }
+            self.onNoMediaReceived?()
+        }
+        noMediaWatchdog = watchdog
+        watchdogQueue.asyncAfter(deadline: .now() + 5, execute: watchdog)
+
         // Sunshine has an application-level input inactivity timeout (distinct from the ENet
         // keepalive). If no input events arrive for ~60–90 s it sends a DISCONNECT. A null
         // relative mouse move (dx=0, dy=0) counts as an input event and resets the timer
@@ -192,6 +214,8 @@ final class StreamTransport {
 
     func stop(reason: String = "caller") {
         print("[ChloroFrame][transport] stop reason=\(reason)")
+        noMediaWatchdog?.cancel()
+        noMediaWatchdog = nil
         if let activity = streamActivity {
             ProcessInfo.processInfo.endActivity(activity)
             streamActivity = nil

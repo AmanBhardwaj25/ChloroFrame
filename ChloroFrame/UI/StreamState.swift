@@ -9,10 +9,13 @@ import AppKit
 enum StreamError: LocalizedError {
     case controlDisconnected
     case rendererUnavailable
+    case noMediaReceived
     var errorDescription: String? {
         switch self {
         case .controlDisconnected: return "Control stream disconnected"
         case .rendererUnavailable: return "Metal renderer is unavailable"
+        case .noMediaReceived:
+            return "Connected to the host, but no video arrived. The network path may be blocking UDP."
         }
     }
 }

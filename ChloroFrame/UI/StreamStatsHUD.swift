@@ -80,6 +80,7 @@ struct StreamStatsHUD: View {
     private func networkSection(_ s: StreamStats) -> some View {
         VStack(alignment: .leading, spacing: 3) {
             label("NETWORK")
+            row("Path",     "\(s.pathInterface)  ·  \(s.pathClass)  ·  \(s.pathPacketSize) B")
             row("Packets",  "\(s.packetsReceived) rx  ·  \(s.packetsRecovered) FEC")
             row("Frames",   "\(s.framesAssembled) ok  ·  \(s.framesLost) lost")
             row("Loss",     String(format: "%.1f%%", s.lossPercent))

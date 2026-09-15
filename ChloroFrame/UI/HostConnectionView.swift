@@ -375,6 +375,11 @@ struct HostConnectionView: View {
                     streamState.didDisconnect(error: StreamError.controlDisconnected)
                 }
             }
+            t.onNoMediaReceived = {
+                Task { @MainActor in
+                    streamState.didDisconnect(error: StreamError.noMediaReceived)
+                }
+            }
 
             try await t.start()
 

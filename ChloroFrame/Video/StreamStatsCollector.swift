@@ -26,6 +26,12 @@ struct StreamStats {
     var recvCodec: VideoCodec? = nil
     var recvHdr: Bool? = nil
 
+    // Network path actually used (design/tailscale-connection-fix-plan.md Phase 5). Set once
+    // before streaming starts; unlike everything else in this struct it never changes.
+    var pathInterface: String = "—"
+    var pathClass: String = "—"
+    var pathPacketSize: Int = 0
+
     // Cumulative totals
     var packetsReceived: Int = 0
     var packetsRecovered: Int = 0
@@ -81,6 +87,13 @@ final class StreamStatsCollector {
     var requestedBitrateKbps: Int = 0
     var requestedCodec: VideoCodec = .h264
     var requestedHdr: Bool = false
+
+    // Network path actually used — set once by StreamTransport before start(), from the route
+    // RouteResolver/AddressClassifier already computed during RTSP negotiation. Read into each
+    // 1-Hz `current` snapshot below so the HUD can show it (Phase 5).
+    var pathInterface: String = "—"
+    var pathClass: String = "—"
+    var pathPacketSize: Int = 0
 
     // Received — set once when the first frame is successfully decoded
     private(set) var receivedCodec: VideoCodec? = nil
@@ -184,6 +197,12 @@ final class StreamStatsCollector {
             acc.bytesReceived += bytes
             acc.snapBytes += bytes
         }
+    }
+
+    /// Total video packets received so far. Used by StreamTransport's no-media watchdog
+    /// (Phase 5), which needs an answer faster than the 1-Hz `current` snapshot can provide.
+    var packetsReceivedSoFar: Int {
+        lock.withLock { acc.packetsReceived }
     }
 
     func recordPacketsRecovered(_ n: Int) {
@@ -359,6 +378,9 @@ final class StreamStatsCollector {
             measBitrateMbps: bitrateMbps,
             recvCodec: receivedCodec,
             recvHdr: receivedHdr,
+            pathInterface: pathInterface,
+            pathClass: pathClass,
+            pathPacketSize: pathPacketSize,
             packetsReceived: snap.packetsReceived,
             packetsRecovered: snap.packetsRecovered,
             framesAssembled: snap.framesAssembled,
