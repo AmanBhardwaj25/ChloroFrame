@@ -391,6 +391,11 @@ struct HostConnectionView: View {
                     streamState.didDisconnect(error: StreamError.controlDisconnected)
                 }
             }
+            t.onNoMediaReceived = {
+                Task { @MainActor in
+                    streamState.didDisconnect(error: StreamError.noMediaReceived)
+                }
+            }
             t.onAudioRecoveryStatusChange = { status in
                 Task { @MainActor in
                     streamState.setAudioRecoveryStatus(status)
