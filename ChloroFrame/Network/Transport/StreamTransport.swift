@@ -97,6 +97,24 @@ final class StreamTransport {
         let videoLocalPort  = desc.videoLocalPort
         let audioLocalPort  = desc.audioLocalPort
 
+        // Pin media sockets to Wi-Fi only when Wi-Fi is actually the route to the host (keeps
+        // AWDL suppression on a LAN-over-Wi-Fi stream, without forcing a Tailscale/VPN/
+        // Ethernet route onto Wi-Fi, where it has no path to the destination). See
+        // RouteResolver / design/tailscale-connection-fix-plan.md.
+        let wifiInterface = NetworkMonitor.shared.wifiInterface
+        let pinToWiFi = wifiInterface != nil && desc.route?.interfaceName == wifiInterface?.name
+        let pinInterfaceIndex: UInt32? = pinToWiFi ? UInt32(wifiInterface!.index) : nil
+        let pinNWInterface: NWInterface? = pinToWiFi ? wifiInterface : nil
+        #if DEBUG
+        if let route = desc.route {
+            Swift.print("[ChloroFrame][transport] route dest=\(route.destination) "
+                      + "iface=\(route.interfaceName) mtu=\(route.interfaceMTU.map(String.init) ?? "?") "
+                      + "pin=\(pinToWiFi ? "wifi" : "none")")
+        } else {
+            Swift.print("[ChloroFrame][transport] route resolution failed; pin=none")
+        }
+        #endif
+
         // RTSP PLAY already fired inside RTSPClient.negotiate() before we get here.
         // Apollo *could* start sending media immediately after PLAY, but in practice it waits
         // for Start A (0x0302) on the ENet control channel. We bind both UDP sockets and send
@@ -129,7 +147,9 @@ final class StreamTransport {
         // Await socket .ready so both ports are bound before Start A/B fires.
         // The OS delivers the initial IDR burst immediately after Start A; if the
         // socket doesn't exist yet, those packets are dropped and video never starts.
-        try await vr.start(host: serverHost, serverPort: videoPort, localPort: videoLocalPort, pingPayload: videoPing)
+        try await vr.start(host: serverHost, serverPort: videoPort, localPort: videoLocalPort,
+                          pingPayload: videoPing, pinInterfaceIndex: pinInterfaceIndex,
+                          family: desc.route?.family ?? AF_INET)
         videoReceiver = vr
 
         stats.start()
@@ -145,7 +165,9 @@ final class StreamTransport {
         let ar = RTPAudioReceiver()
         ar.onPacket = { [weak engine] packet in engine?.push(packet: packet) }
         stats.audioReceiverStatsProvider = { [weak ar] in ar.map { ($0.apparentLoss, $0.reorderDiscarded) } }
-        try await ar.start(host: serverHost, serverPort: audioPort, localPort: audioLocalPort, pingPayload: audioPing)
+        try await ar.start(host: serverHost, serverPort: audioPort, localPort: audioLocalPort,
+                          pingPayload: audioPing, requiredInterface: pinNWInterface,
+                          family: desc.route?.family ?? AF_INET)
         audioReceiver = ar
 
         // Both sockets are now bound and SS_PING has been sent.

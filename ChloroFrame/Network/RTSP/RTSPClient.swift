@@ -16,7 +16,9 @@ private func rtspLogBlock(_ header: String, body: String, step: String) {
 
 // MARK: - Types
 
-enum VideoCodec {
+// nonisolated: pure value data, needed from RouteResolver/SDPBuilder's nonisolated context and
+// from unit tests, not just MainActor code. See the same note on Host in ContentView.swift.
+nonisolated enum VideoCodec {
     case h264, hevc, av1
 }
 
@@ -38,6 +40,15 @@ struct StreamDescriptor {
     // compressed video payload, matching Moonlight's StreamConfig.packetSize.
     // Used as the per-shard row size for RS FEC (blockSize = videoPacketSize + RTP header).
     let videoPacketSize:     Int
+    // Which local interface an unpinned socket would use to reach serverHost, resolved once
+    // up front so StreamTransport can decide whether pinning media sockets to Wi-Fi is correct
+    // (nil if resolution failed; media sockets then go unpinned). See RouteResolver.
+    let route:               RouteInfo?
+    // local/remote classification of the route (AddressClassifier), driving the packet size
+    // and QoS/bitrate attributes already sent in ANNOUNCE. Carried here mainly for diagnostics
+    // (a future HUD line); defaults to .local when route resolution failed, matching
+    // PacketSizePolicy's own fail-open default.
+    let networkClass:        StreamNetworkClass
 }
 
 enum RTSPError: LocalizedError {
@@ -61,7 +72,7 @@ enum RTSPError: LocalizedError {
 // MARK: - Stream configuration
 
 /// Parameters sent to Sunshine in the DESCRIBE SDP body so it can configure the encoder.
-struct StreamConfig {
+nonisolated struct StreamConfig {
     var width:   Int    = 1920
     var height:  Int    = 1080
     var fps:     Int    = 60
@@ -76,10 +87,6 @@ struct StreamConfig {
 /// required by Apollo/Sunshine. Apollo closes the TCP socket after every response,
 /// so request() opens a fresh connection for each method.
 final class RTSPClient {
-
-    // Moonlight's StreamConfig.packetSize: bytes after the RTP header. This includes
-    // NV_VIDEO_PACKET plus compressed video payload and must match the SDP attribute.
-    private static let videoPacketSize = 1392
 
     private var connection: NWConnection?
     private var buffer     = Data()
@@ -98,6 +105,34 @@ final class RTSPClient {
         // Apollo closes the socket after every response — persistent connections are not supported.
 
         print("[ChloroFrame][rtsp] negotiate start  host=\(host):\(serverPort)")
+
+        // Resolve which interface an unpinned socket would use to reach the host — needed by
+        // StreamTransport to decide whether pinning media sockets to Wi-Fi is correct (a
+        // Tailscale/VPN/Ethernet route must not be forced onto Wi-Fi). Resolved once, up
+        // front, so every socket that reads it agrees on the same answer. Off the RTSP
+        // request/response path; failure here is non-fatal (nil means "do not pin").
+        // See design/tailscale-connection-fix-plan.md.
+        let rtspPort = serverPort
+        let route = await Task.detached(priority: .userInitiated) {
+            RouteResolver.resolve(host: host, port: rtspPort)
+        }.value
+        // Classify the route (local vs remote) and cap the video packet size to what it can
+        // actually carry, so a Tailscale/WAN path gets Moonlight's smaller remote packet size
+        // instead of fragmenting every video datagram. Route resolution failure defaults to
+        // .local, matching today's behavior (1392, no cap). See AddressClassifier.swift.
+        let networkClass = route.map { AddressClassifier.classify(numericHost: $0.destination) } ?? .local
+        let chosenPacketSize = PacketSizePolicy.choose(
+            class: networkClass, family: route?.family ?? AF_INET, interfaceMTU: route?.interfaceMTU
+        )
+        #if DEBUG
+        // rtspLog routes through AppLogger, which is a permanent no-op (see Logging.swift) —
+        // use Swift.print directly so this diagnostic actually shows up while testing.
+        Swift.print("[ChloroFrame][rtsp] route dest=\(route?.destination ?? "?") "
+                  + "iface=\(route?.interfaceName ?? "?") "
+                  + "mtu=\(route.flatMap { $0.interfaceMTU.map(String.init) } ?? "?") "
+                  + "class=\(networkClass) packetSize=\(chosenPacketSize)")
+        #endif
+
         // ── OPTIONS ──────────────────────────────────────────────────────────
         _ = try await request("OPTIONS", uri: "*", extra: [:])
 
@@ -165,8 +200,11 @@ final class RTSPClient {
 
         // ── ANNOUNCE ─────────────────────────────────────────────────────────
         // Client capability SDP (resolution, bitrate, codec, x-nv-*/x-ss-*/x-ml-* attrs).
-        let announceSDP  = buildDescribeSDP(serverHost: host, videoLocalPort: 47998, config: effectiveConfig,
-                                            encryptionEnabled: encryptionEnabled)
+        let announceSDP  = SDPBuilder.buildAnnounceSDP(
+            serverHost: host, serverFamily: route?.family ?? AF_INET, videoLocalPort: 47998,
+            config: effectiveConfig, encryptionEnabled: encryptionEnabled, networkClass: networkClass,
+            videoPacketSize: chosenPacketSize
+        )
         print("[ChloroFrame][rtsp] ANNOUNCE encryptionEnabled=\(encryptionEnabled)")
         let announceData = Data(announceSDP.utf8)
         let announce = try await request("ANNOUNCE", uri: "streamid=control/13/0", extra: [
@@ -184,8 +222,8 @@ final class RTSPClient {
         // absent, use the same value we advertised in ANNOUNCE so the FEC shard width
         // remains consistent with the encoder.
         let gsPacketSize = Int(play.headers["x-gs-packetsize"]?.trimmingCharacters(in: .whitespaces) ?? "0") ?? 0
-        let negotiatedPacketSize = gsPacketSize > 0 ? gsPacketSize : Self.videoPacketSize
-        rtspLog("video packet size advertised=\(Self.videoPacketSize) playHeader=\(gsPacketSize) using=\(negotiatedPacketSize)", step: "PLAY")
+        let negotiatedPacketSize = gsPacketSize > 0 ? gsPacketSize : chosenPacketSize
+        rtspLog("video packet size advertised=\(chosenPacketSize) playHeader=\(gsPacketSize) using=\(negotiatedPacketSize)", step: "PLAY")
         print("[ChloroFrame][rtsp] PLAY OK → video:\(videoServerPort) audio:\(audioServerPort) control:\(controlServerPort) connectData=\(controlConnectData) packetSize=\(negotiatedPacketSize)")
 
         return StreamDescriptor(
@@ -200,7 +238,9 @@ final class RTSPClient {
             videoPingPayload:    videoPingPayload,
             controlServerPort:   controlServerPort,
             controlConnectData:  controlConnectData,
-            videoPacketSize:     negotiatedPacketSize
+            videoPacketSize:     negotiatedPacketSize,
+            route:               route,
+            networkClass:        networkClass
         )
     }
 
@@ -259,7 +299,7 @@ final class RTSPClient {
         cseq += 1
         var msg = "\(method) \(uri) RTSP/1.0\r\nCSeq: \(cseq)\r\n"
         msg += "X-GS-ClientVersion: 14\r\n"
-        if !serverHost.isEmpty { msg += "Host: \(serverHost)\r\n" }
+        if !serverHost.isEmpty { msg += "Host: \(HostAddress.urlHost(serverHost))\r\n" }
         if let sid = sessionId { msg += "Session: \(sid)\r\n" }
         for (k, v) in extra   { msg += "\(k): \(v)\r\n" }
         msg += "\r\n"
@@ -377,77 +417,6 @@ final class RTSPClient {
         let result = Data(buffer.prefix(count))
         buffer = Data(buffer.dropFirst(count))
         return result
-    }
-
-    // MARK: - SDP body builder
-
-    /// Builds the client capability SDP sent in the ANNOUNCE body (after all SETUPs).
-    /// Sunshine uses this to configure the encoder (resolution, FPS, bitrate, codec).
-    /// Format mirrors Moonlight's SdpGenerator for AppVersion 7 / Sunshine.
-    private func buildDescribeSDP(serverHost: String, videoLocalPort: UInt16,
-                                   config: StreamConfig, encryptionEnabled: UInt32 = 1) -> String {
-        // Cap raised to 500 Mbps to allow experimenting with the custom bitrate field.
-        let adjusted = min(Int(Double(config.bitrate) * 0.80), 500_000)
-        let bitStreamFormat = switch config.codec {
-            case .h264: 0
-            case .hevc: 1
-            case .av1:  2
-        }
-        let hevcFlag = config.codec == .hevc ? 1 : 0
-        let refreshRateX100 = config.fps * 100
-
-        func a(_ name: String, _ value: Any) -> String { "a=\(name):\(value) \r\n" }
-
-        return
-            "v=0\r\n" +
-            "o=android 0 14 IN IPv4 \(serverHost)\r\n" +
-            "s=NVIDIA Streaming Client\r\n" +
-            "t=0 0\r\n" +
-            "m=video \(videoLocalPort)  \r\n" +
-            // Sunshine-specific feature negotiation
-            a("x-ml-general.featureFlags",          3) +   // ML_FF_FEC_STATUS | ML_FF_SESSION_ID_V1
-            a("x-ss-general.encryptionEnabled",     encryptionEnabled) +
-            a("x-ss-video[0].chromaSamplingType",   0) +   // YUV 4:2:0
-            // Stream geometry + encoder settings
-            a("x-nv-video[0].clientViewportWd",     config.width) +
-            a("x-nv-video[0].clientViewportHt",     config.height) +
-            a("x-nv-video[0].maxFPS",               config.fps) +
-            a("x-nv-video[0].packetSize",           Self.videoPacketSize) +
-            a("x-nv-video[0].rateControlMode",      4) +
-            a("x-nv-video[0].timeoutLengthMs",      7000) +
-            a("x-nv-video[0].framesWithInvalidRefThreshold", 0) +
-            // Bitrate
-            a("x-nv-video[0].initialBitrateKbps",       adjusted) +
-            a("x-nv-video[0].initialPeakBitrateKbps",   adjusted) +
-            a("x-nv-vqos[0].bw.minimumBitrateKbps",     adjusted) +
-            a("x-nv-vqos[0].bw.maximumBitrateKbps",     adjusted) +
-            a("x-ml-video.configuredBitrateKbps",        config.bitrate) +
-            // FEC + QoS (local)
-            a("x-nv-vqos[0].fec.enable",                    1) +
-            a("x-nv-vqos[0].videoQualityScoreUpdateTime",   5000) +
-            a("x-nv-vqos[0].qosTrafficType",                5) +   // local
-            a("x-nv-aqos.qosTrafficType",                   4) +   // local
-            // Gen5 / Sunshine transport flags
-            a("x-nv-general.featureFlags",          135) +  // NVFF_BASE(7) | NVFF_RI_ENCRYPTION(128)
-            a("x-nv-general.useReliableUdp",        13) +  // 13 = encrypted ENet control stream (APP_VERSION >= 7.1.431)
-            a("x-nv-vqos[0].fec.minRequiredFecPackets", 2) +
-            a("x-nv-vqos[0].bllFec.enable",         0) +
-            a("x-nv-vqos[0].drc.enable",            0) +
-            a("x-nv-general.enableRecoveryMode",    0) +
-            // Codec selection
-            a("x-nv-video[0].videoEncoderSlicesPerFrame", 1) +
-            a("x-nv-clientSupportHevc",             hevcFlag) +
-            a("x-nv-vqos[0].bitStreamFormat",       bitStreamFormat) +
-            a("x-nv-video[0].dynamicRangeMode",     config.hdr ? 1 : 0) +
-            a("x-nv-video[0].maxNumReferenceFrames", 1) +
-            a("x-nv-video[0].clientRefreshRateX100", refreshRateX100) +
-            a("x-nv-video[0].encoderCscMode",       config.hdr ? 4 : 0) +   // 4=BT.2020 limited (HDR10), 0=BT.601 limited (SDR)
-            // Audio (stereo)
-            a("x-nv-audio.surround.numChannels",    2) +
-            a("x-nv-audio.surround.channelMask",    3) +
-            a("x-nv-audio.surround.enable",         0) +
-            a("x-nv-audio.surround.AudioQuality",   0) +
-            a("x-nv-aqos.packetDuration",           5)
     }
 
     // MARK: - Helpers

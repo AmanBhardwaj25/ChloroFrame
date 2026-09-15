@@ -72,7 +72,16 @@ final class RTPVideoReceiver {
 
     /// Binds the UDP socket and sends the first SS_PING before returning.
     /// Callers must await this so Start A/B is sent only after the socket is ready.
-    func start(host: String, serverPort: UInt16, localPort: UInt16, pingPayload: String) async throws {
+    /// - Parameter pinInterfaceIndex: when non-nil, pins the socket to this interface with
+    ///   IP_BOUND_IF (used to keep media off awdl0 when Wi-Fi is actually the route to the
+    ///   host). nil means do not pin — the route goes elsewhere (VPN, Ethernet, ...) and
+    ///   forcing it onto Wi-Fi would send packets nowhere. See RouteResolver /
+    ///   design/tailscale-connection-fix-plan.md.
+    /// - Parameter family: AF_INET or AF_INET6, from the resolved route. Selects the socket's
+    ///   address family, bind address, and BOUND_IF option; defaults to AF_INET so existing
+    ///   IPv4-only callers are unaffected.
+    func start(host: String, serverPort: UInt16, localPort: UInt16, pingPayload: String,
+               pinInterfaceIndex: UInt32? = nil, family: Int32 = AF_INET) async throws {
         queue.onFrameAssembled = { [weak self] _, frameBytes, rtpTimestamp, frameType in
             guard let self else { return }
             self.advanceRtpTimeline(rtpTimestamp)
@@ -89,7 +98,7 @@ final class RTPVideoReceiver {
             self.onFrameLost?(frameNumber)
         }
 
-        let fd = socket(AF_INET, SOCK_DGRAM, 0)
+        let fd = socket(family, SOCK_DGRAM, 0)
         guard fd >= 0 else { throw ReceiverError.socketCreateFailed(errno) }
         var fdOwned = true
         defer { if fdOwned { close(fd) } }
@@ -110,32 +119,54 @@ final class RTPVideoReceiver {
         var serviceType: Int32 = NET_SERVICE_TYPE_VI
         setsockopt(fd, SOL_SOCKET, SO_NET_SERVICE_TYPE, &serviceType, socklen_t(MemoryLayout<Int32>.size))
 
-        // Opt-D equivalent of params.requiredInterface: pin to the Wi-Fi interface
-        // so replies can't route over awdl0. NetworkMonitor has been running since
-        // app launch; the interface is already known.
-        if let iface = NetworkMonitor.shared.wifiInterface {
-            var ifIndex = UInt32(iface.index)
-            setsockopt(fd, IPPROTO_IP, IP_BOUND_IF, &ifIndex, socklen_t(MemoryLayout<UInt32>.size))
-            print("[RTPVideoReceiver] WiFi interface locked to '\(iface.name)' (index \(iface.index))")
+        // Opt-D equivalent of params.requiredInterface: pin to the caller-resolved interface
+        // (only when it's actually Wi-Fi — see the pinInterfaceIndex doc comment above) so
+        // replies can't route over awdl0. A route that goes elsewhere (Tailscale/VPN,
+        // Ethernet) is left unpinned; forcing it onto Wi-Fi would send packets to the wrong
+        // gateway (see design/tailscale-connection-fix-plan.md). IPV6_BOUND_IF is IP_BOUND_IF's
+        // IPv6 counterpart (level IPPROTO_IPV6 instead of IPPROTO_IP).
+        if var ifIndex = pinInterfaceIndex {
+            if family == AF_INET6 {
+                setsockopt(fd, IPPROTO_IPV6, IPV6_BOUND_IF, &ifIndex, socklen_t(MemoryLayout<UInt32>.size))
+            } else {
+                setsockopt(fd, IPPROTO_IP, IP_BOUND_IF, &ifIndex, socklen_t(MemoryLayout<UInt32>.size))
+            }
+            print("[RTPVideoReceiver] pinned to interface index \(ifIndex)")
         } else {
-            print("[RTPVideoReceiver] WARNING: no cached WiFi interface; AWDL lock skipped")
+            print("[RTPVideoReceiver] not pinned to an interface (route is not Wi-Fi, or unresolved)")
         }
 
-        var local = sockaddr_in()
-        local.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
-        local.sin_family = sa_family_t(AF_INET)
-        local.sin_port = localPort.bigEndian
-        local.sin_addr.s_addr = INADDR_ANY
-        let bindResult = withUnsafePointer(to: &local) {
-            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
-                Darwin.bind(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+        let bindResult: Int32
+        if family == AF_INET6 {
+            var local6 = sockaddr_in6()
+            local6.sin6_len = UInt8(MemoryLayout<sockaddr_in6>.size)
+            local6.sin6_family = sa_family_t(AF_INET6)
+            local6.sin6_port = localPort.bigEndian
+            local6.sin6_addr = in6addr_any
+            bindResult = withUnsafePointer(to: &local6) {
+                $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                    Darwin.bind(fd, $0, socklen_t(MemoryLayout<sockaddr_in6>.size))
+                }
+            }
+        } else {
+            var local = sockaddr_in()
+            local.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+            local.sin_family = sa_family_t(AF_INET)
+            local.sin_port = localPort.bigEndian
+            local.sin_addr.s_addr = INADDR_ANY
+            bindResult = withUnsafePointer(to: &local) {
+                $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                    Darwin.bind(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+                }
             }
         }
         guard bindResult == 0 else { throw ReceiverError.bindFailed(errno) }
 
         // connect() the UDP socket to the server so the kernel filters foreign
-        // datagrams and send()/recv() can be used without per-call addresses.
-        var hints = addrinfo(ai_flags: 0, ai_family: AF_INET, ai_socktype: SOCK_DGRAM,
+        // datagrams and send()/recv() can be used without per-call addresses. host is always
+        // the unbracketed literal here (RouteResolver/StreamDescriptor never bracket it); only
+        // the URL/header/SDP-building layers need HostAddress.urlHost.
+        var hints = addrinfo(ai_flags: 0, ai_family: family, ai_socktype: SOCK_DGRAM,
                              ai_protocol: IPPROTO_UDP, ai_addrlen: 0,
                              ai_canonname: nil, ai_addr: nil, ai_next: nil)
         var resolved: UnsafeMutablePointer<addrinfo>?
