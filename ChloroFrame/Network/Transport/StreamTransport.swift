@@ -37,7 +37,6 @@ final class StreamTransport {
     var onNoMediaReceived: (() -> Void)?
 
     let stats = StreamStatsCollector()
-    private var streamActivity: NSObjectProtocol?
     private var noMediaWatchdog: DispatchWorkItem?
     private let watchdogQueue = DispatchQueue(label: "chloroframe.streamtransport.watchdog")
 
@@ -56,10 +55,7 @@ final class StreamTransport {
 
     /// Start all transport streams. Must be called immediately after RTSP PLAY.
     func start() async throws {
-        streamActivity = ProcessInfo.processInfo.beginActivity(
-            options: [.latencyCritical, .userInitiatedAllowingIdleSystemSleep],
-            reason: "Active stream"
-        )
+        StreamActivityGuard.start()
         #if os(macOS)
         AWDLSuppressor.shared.suppress()
         #endif
@@ -67,10 +63,7 @@ final class StreamTransport {
         var startSucceeded = false
         defer {
             if !startSucceeded {
-                if let activity = streamActivity {
-                    ProcessInfo.processInfo.endActivity(activity)
-                    streamActivity = nil
-                }
+                StreamActivityGuard.stop()
                 // Stop any receivers/engine that may have been started before the throw.
                 videoReceiver?.stop(); videoReceiver = nil
                 audioReceiver?.stop(); audioReceiver = nil
@@ -216,10 +209,7 @@ final class StreamTransport {
         print("[ChloroFrame][transport] stop reason=\(reason)")
         noMediaWatchdog?.cancel()
         noMediaWatchdog = nil
-        if let activity = streamActivity {
-            ProcessInfo.processInfo.endActivity(activity)
-            streamActivity = nil
-        }
+        StreamActivityGuard.stop()
         #if os(macOS)
         AWDLSuppressor.shared.restore()
         #endif

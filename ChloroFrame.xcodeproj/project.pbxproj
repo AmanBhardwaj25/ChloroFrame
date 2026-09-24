@@ -97,6 +97,7 @@
 				App/AppLogger.swift,
 				App/Logging.swift,
 				App/SessionLog.swift,
+				App/StreamActivityGuard.swift,
 				App/StreamLog.swift,
 				Audio/AudioEngine.swift,
 				Audio/AudioEngineStats.swift,
