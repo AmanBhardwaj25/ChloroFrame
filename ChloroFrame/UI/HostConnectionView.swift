@@ -18,6 +18,9 @@ private enum FlowPhase {
     case launching(SunshineApp)
     case negotiating(SunshineApp, SunshineHTTPClient.LaunchResult)
     case failed(Error)
+    // Distinct from .failed: carries the app + serverInfo so the error view can offer
+    // "Stop Running App & Retry" when the failure is SunshineError.appAlreadyRunning.
+    case launchFailed(SunshineApp, ServerInfo, Error)
 }
 
 // MARK: - Root view
@@ -61,6 +64,8 @@ struct HostConnectionView: View {
                 negotiatingView(app, result: result)
             case .failed(let error):
                 errorView(error)
+            case .launchFailed(let app, let info, let error):
+                launchFailedView(app, serverInfo: info, error: error)
             }
         }
         .task { await connect() }
@@ -211,11 +216,13 @@ struct HostConnectionView: View {
                         spacing: 12
                     ) {
                         ForEach(apps) { app in
-                            AppCard(app: app, fetchBoxArt: {
-                                await client.fetchBoxArt(id: app.id)
-                            }) {
-                                Task { await launch(app: app, serverInfo: info) }
-                            }
+                            AppCard(
+                                app:         app,
+                                isRunning:   info.currentGame != 0 && info.currentGame == app.id,
+                                fetchBoxArt: { await client.fetchBoxArt(id: app.id) },
+                                onLaunch:    { Task { await launch(app: app, serverInfo: info) } },
+                                onStop:      { Task { await stopRunningApp(id: app.id) } }
+                            )
                         }
                     }
                     .padding(20)
@@ -245,6 +252,41 @@ struct HostConnectionView: View {
         }
         .frame(width: 360, height: 220)
         .padding()
+    }
+
+    // MARK: - Launch error (with recovery for a stuck "app already running" session)
+
+    private func launchFailedView(_ app: SunshineApp, serverInfo: ServerInfo, error: Error) -> some View {
+        VStack(spacing: 16) {
+            Image(systemName: "exclamationmark.triangle")
+                .font(.system(size: 36, weight: .light))
+                .foregroundStyle(.red)
+
+            Text(error.localizedDescription)
+                .multilineTextAlignment(.center)
+                .foregroundStyle(.secondary)
+
+            HStack(spacing: 12) {
+                Button("Cancel") { dismiss() }
+                if isAppAlreadyRunning(error) {
+                    Button("Stop Running App & Retry") {
+                        Task { await stopAndRetry(app: app, serverInfo: serverInfo) }
+                    }
+                    .buttonStyle(.borderedProminent)
+                } else {
+                    Button("Retry") { Task { await launch(app: app, serverInfo: serverInfo) } }
+                        .buttonStyle(.borderedProminent)
+                }
+            }
+        }
+        .frame(width: 360, height: 220)
+        .padding()
+    }
+
+    private func isAppAlreadyRunning(_ error: Error) -> Bool {
+        guard let sunshineError = error as? SunshineError else { return false }
+        if case .appAlreadyRunning = sunshineError { return true }
+        return false
     }
 
     // MARK: - Launching
@@ -348,8 +390,22 @@ struct HostConnectionView: View {
             phase = .negotiating(app, result)
             await negotiate(app: app, result: result, display: display, codec: codec, hdr: enableHdr)
         } catch {
-            phase = .failed(error)
+            phase = .launchFailed(app, serverInfo, error)
         }
+    }
+
+    // Force-stop whatever the host thinks is running (falling back to the target app's own id
+    // if serverInfo is stale and doesn't know it) and retry the same launch.
+    private func stopAndRetry(app: SunshineApp, serverInfo: ServerInfo) async {
+        let runningId = serverInfo.currentGame != 0 ? serverInfo.currentGame : app.id
+        await client.cancelApp(id: runningId)
+        await launch(app: app, serverInfo: serverInfo)
+    }
+
+    // Stop a specific app from the app-list "running" badge, then refresh so its badge clears.
+    private func stopRunningApp(id: Int) async {
+        await client.cancelApp(id: id)
+        await connect()
     }
 
     private func negotiate(app: SunshineApp, result: SunshineHTTPClient.LaunchResult, display: DisplayConfig, codec: VideoCodec, hdr enableHdr: Bool) async {
@@ -538,8 +594,10 @@ private struct StreamSettingsPopover: View {
 
 private struct AppCard: View {
     let app: SunshineApp
+    let isRunning: Bool
     let fetchBoxArt: () async -> NSImage?
     let onLaunch: () -> Void
+    let onStop: () -> Void
 
     @State private var isHovered = false
     @State private var boxArt: NSImage?
@@ -549,33 +607,44 @@ private struct AppCard: View {
     private var cardH: CGFloat { cardW * 1.5 }
 
     var body: some View {
-        Button(action: onLaunch) {
-            ZStack(alignment: .bottom) {
-                // Art or placeholder
-                Group {
-                    if let img = boxArt {
-                        Image(nsImage: img)
-                            .resizable()
-                            .aspectRatio(contentMode: .fill)
-                    } else {
-                        Color("CFSurface")
-                        Image(systemName: "gamecontroller")
-                            .font(.system(size: 28, weight: .ultraLight))
-                            .foregroundStyle(Color.accentColor.opacity(0.4))
-                    }
+        // A plain ZStack + .onTapGesture (rather than wrapping everything in a Button) so the
+        // "stop" Button below can sit on top of it as its own tap target — a Button nested
+        // inside another Button doesn't get its own independent tap on macOS/tvOS.
+        ZStack(alignment: .bottom) {
+            // Art or placeholder
+            Group {
+                if let img = boxArt {
+                    Image(nsImage: img)
+                        .resizable()
+                        .aspectRatio(contentMode: .fill)
+                } else {
+                    Color("CFSurface")
+                    Image(systemName: "gamecontroller")
+                        .font(.system(size: 28, weight: .ultraLight))
+                        .foregroundStyle(Color.accentColor.opacity(0.4))
                 }
-                .frame(width: cardW, height: cardH)
-                .clipped()
+            }
+            .frame(width: cardW, height: cardH)
+            .clipped()
 
-                // Title bar
-                VStack(spacing: 2) {
-                    Text(app.title)
-                        .font(.caption2)
-                        .fontWeight(.medium)
-                        .lineLimit(2)
-                        .multilineTextAlignment(.center)
-                        .foregroundStyle(.white)
+            // Title bar
+            VStack(spacing: 2) {
+                Text(app.title)
+                    .font(.caption2)
+                    .fontWeight(.medium)
+                    .lineLimit(2)
+                    .multilineTextAlignment(.center)
+                    .foregroundStyle(.white)
 
+                HStack(spacing: 4) {
+                    if isRunning {
+                        Text("RUNNING")
+                            .font(.system(size: 8, weight: .semibold))
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 4)
+                            .padding(.vertical, 1)
+                            .background(Color.green, in: RoundedRectangle(cornerRadius: 3))
+                    }
                     if app.isHDRSupported {
                         Text("HDR")
                             .font(.system(size: 8, weight: .semibold))
@@ -585,23 +654,43 @@ private struct AppCard: View {
                             .background(Color("CFGold"), in: RoundedRectangle(cornerRadius: 3))
                     }
                 }
-                .padding(.horizontal, 6)
-                .padding(.vertical, 5)
-                .frame(maxWidth: .infinity)
-                .background(.ultraThinMaterial)
             }
-            .frame(width: cardW, height: cardH)
-            .clipShape(RoundedRectangle(cornerRadius: 10))
-            .overlay(
-                RoundedRectangle(cornerRadius: 10)
-                    .strokeBorder(
-                        isHovered ? Color.accentColor.opacity(0.7) : Color(.separatorColor).opacity(0.5),
-                        lineWidth: isHovered ? 1.5 : 0.5
-                    )
-            )
-            .scaleEffect(isHovered ? 1.03 : 1.0)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 5)
+            .frame(maxWidth: .infinity)
+            .background(.ultraThinMaterial)
+
+            if isRunning {
+                VStack {
+                    HStack {
+                        Spacer()
+                        Button(action: onStop) {
+                            Image(systemName: "stop.circle.fill")
+                                .font(.system(size: 18))
+                                .symbolRenderingMode(.palette)
+                                .foregroundStyle(.white, .red)
+                                .background(Circle().fill(.black.opacity(0.35)))
+                        }
+                        .buttonStyle(.plain)
+                        .help("Stop this app on the host")
+                        .padding(6)
+                    }
+                    Spacer()
+                }
+            }
         }
-        .buttonStyle(.plain)
+        .frame(width: cardW, height: cardH)
+        .clipShape(RoundedRectangle(cornerRadius: 10))
+        .overlay(
+            RoundedRectangle(cornerRadius: 10)
+                .strokeBorder(
+                    isHovered ? Color.accentColor.opacity(0.7) : Color(.separatorColor).opacity(0.5),
+                    lineWidth: isHovered ? 1.5 : 0.5
+                )
+        )
+        .scaleEffect(isHovered ? 1.03 : 1.0)
+        .contentShape(RoundedRectangle(cornerRadius: 10))
+        .onTapGesture(perform: onLaunch)
         .onHover { isHovered = $0 }
         .animation(.easeInOut(duration: 0.12), value: isHovered)
         .task {

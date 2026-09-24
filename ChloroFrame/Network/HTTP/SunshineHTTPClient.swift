@@ -19,6 +19,10 @@ struct ServerInfo {
     let serverUniqueId: String
     let pairStatus: Int
     let codecModeSupport: Int
+    // App id of whatever Sunshine/Apollo currently thinks is running on the host, 0 if none.
+    // A stale value here (e.g. a session that never cleaned up) is what makes /launch fail
+    // with "An app is already running on this host" — see SunshineError.appAlreadyRunning.
+    let currentGame: Int
 
     var isPaired: Bool { pairStatus == 1 }
 
@@ -51,6 +55,7 @@ enum SunshineError: LocalizedError {
     case cryptoFailed(String)
     case pinMismatch
     case pairingFailed(String)
+    case appAlreadyRunning
 
     var errorDescription: String? {
         switch self {
@@ -60,6 +65,7 @@ enum SunshineError: LocalizedError {
         case .cryptoFailed(let m):      return "Crypto error: \(m)"
         case .pinMismatch:              return "Wrong PIN — check the number shown on your Sunshine server"
         case .pairingFailed(let m):     return "Pairing failed: \(m)"
+        case .appAlreadyRunning:        return "An app is already running on this host"
         }
     }
 }
@@ -129,7 +135,7 @@ final class SunshineHTTPClient: NSObject {
             httpsPort = port
         }
         let info = try parseServerInfo(data)
-        AppLogger.shared.log("hostname=\(info.hostname) gpu=\(info.gpuType) paired=\(info.isPaired) codecModes=\(info.codecModeSupport)", "HTTP", "serverinfo")
+        AppLogger.shared.log("hostname=\(info.hostname) gpu=\(info.gpuType) paired=\(info.isPaired) codecModes=\(info.codecModeSupport) currentGame=\(info.currentGame)", "HTTP", "serverinfo")
         return info
     }
 
@@ -310,14 +316,18 @@ final class SunshineHTTPClient: NSObject {
         guard let sessionUrl = xmlValue(data, "sessionUrl0") else {
             let msg = xmlAttr(data, "status_message") ?? "no sessionUrl0"
             AppLogger.shared.log("FAILED — \(msg)", "HTTP", "launch")
+            if msg.lowercased().contains("already running") {
+                throw SunshineError.appAlreadyRunning
+            }
             throw SunshineError.invalidResponse(msg)
         }
         AppLogger.shared.log("sessionUrl=\(sessionUrl)", "HTTP", "launch")
         return LaunchResult(sessionUrl: sessionUrl, rikey: rikey, rikeyid: rikeyid)
     }
 
-    /// Tell Sunshine to stop any currently-running session for this app.
-    /// Always call before launchApp so Sunshine starts a truly fresh session with the new rikey.
+    /// Tell Sunshine to stop the currently-running session for this app (the standard
+    /// GameStream /cancel call, used both to end a session the client started and to recover
+    /// from a stuck "an app is already running" state left by a session that never cleaned up).
     /// If no session is active the server returns an error — we ignore it.
     func cancelApp(id: Int) async {
         _ = try? await getHTTPS("cancel", params: ["appid": String(id)])
@@ -637,7 +647,8 @@ final class SunshineHTTPClient: NSObject {
             gpuType:          xmlValue(data, "gputype") ?? "Unknown GPU",
             serverUniqueId:   xmlValue(data, "uniqueid") ?? "",
             pairStatus:       Int(xmlValue(data, "PairStatus") ?? "0") ?? 0,
-            codecModeSupport: Int(xmlValue(data, "ServerCodecModeSupport") ?? "0") ?? 0
+            codecModeSupport: Int(xmlValue(data, "ServerCodecModeSupport") ?? "0") ?? 0,
+            currentGame:      Int(xmlValue(data, "currentgame") ?? "0") ?? 0
         )
     }
 
