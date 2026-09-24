@@ -132,7 +132,7 @@ final class AV1OBUTests: XCTestCase {
 final class ServerCapabilityTests: XCTestCase {
     private func info(codecModeSupport: Int) -> ServerInfo {
         ServerInfo(hostname: "h", gpuType: "g", serverUniqueId: "u",
-                   pairStatus: 1, codecModeSupport: codecModeSupport)
+                   pairStatus: 1, codecModeSupport: codecModeSupport, currentGame: 0)
     }
 
     func testSupportsAV1Main8() {
