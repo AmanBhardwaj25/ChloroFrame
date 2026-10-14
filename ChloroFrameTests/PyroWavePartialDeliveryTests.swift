@@ -395,6 +395,58 @@ final class PyroWavePartialDeliveryTests: XCTestCase {
         XCTAssertNil(h.queue.pendingDeadline)
     }
 
+
+    // MARK: - Diagnostics (drop reasons, release kind, late packets)
+
+    func testDropReasonsAreClassified() {
+        func dropped(_ f: SynthFrame, drop: Set<Int>) -> PartialDiagnostics {
+            let h = harness()
+            let sent = datagrams(f, seqStart: 0, drop: drop)
+            feed(sent.packets, into: h)
+            feed(follower(index: f.index + 1, seqStart: sent.nextSeq), into: h)
+            return h.stats.experimentSnapshot().diagnostics
+        }
+        XCTAssertEqual(dropped(synthFrame(index: 1, blocks: [10, 30], critical: 4), drop: [0]).dropFirstPacket, 1)
+        XCTAssertEqual(dropped(synthFrame(index: 1, blocks: [10, 30], critical: 4), drop: [2]).dropCritical, 1)
+        XCTAssertEqual(dropped(synthFrame(index: 1, blocks: [10, 20, 20], critical: 3), drop: Set(10..<30)).dropWholeBlock, 1)
+        XCTAssertEqual(dropped(synthFrame(index: 1, blocks: [10, 30], critical: 0), drop: [25]).dropIneligible, 1)
+        XCTAssertEqual(dropped(synthFrame(index: 1, blocks: [10, 20], critical: 3), drop: Set(10..<30)).dropWholeBlock, 1)
+    }
+
+    func testReleaseKindIsRecorded() {
+        let boundary = harness()
+        let f = synthFrame(index: 1, blocks: [10, 30], critical: 4)
+        let sent = datagrams(f, seqStart: 0, drop: [25])
+        feed(sent.packets, into: boundary)
+        feed(follower(index: 2, seqStart: sent.nextSeq), into: boundary)
+        XCTAssertEqual(boundary.stats.experimentSnapshot().diagnostics.releasedAtBoundary, 1)
+        XCTAssertEqual(boundary.stats.experimentSnapshot().diagnostics.releasedByDeadline, 0)
+
+        let deadline = harness()
+        feed(datagrams(f, seqStart: 0, drop: [25]).packets, into: deadline)
+        deadline.clock.now = 101
+        XCTAssertTrue(deadline.queue.expirePending())
+        XCTAssertEqual(deadline.stats.experimentSnapshot().diagnostics.releasedByDeadline, 1)
+    }
+
+    func testPacketsArrivingAfterExpiryAreCountedAsLateWithTheirDelay() {
+        let h = harness()
+        let f = synthFrame(index: 1, blocks: [10, 30], critical: 4)
+        let all = datagrams(f, seqStart: 0).packets
+        feed(datagrams(f, seqStart: 0, drop: [25, 26]).packets, into: h)
+        h.clock.now = 100.002
+        XCTAssertTrue(h.queue.expirePending())
+        h.clock.now = 100.0045                      // 2.5 ms after delivery
+        feed([all[25]], into: h)
+        h.clock.now = 100.030                       // 28 ms after delivery
+        feed([all[26]], into: h)
+        let d = h.stats.experimentSnapshot().diagnostics
+        XCTAssertEqual(d.lateCount, 2)
+        XCTAssertEqual(d.lateUnder5, 1)
+        XCTAssertEqual(d.lateOver20, 1)
+        XCTAssertEqual(d.lateMaxMs, 28, accuracy: 0.01)
+    }
+
     // MARK: - Parser with a loss map
 
     private typealias Parser = PyroWaveRecordParser

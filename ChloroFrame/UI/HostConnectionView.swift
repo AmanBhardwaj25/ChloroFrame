@@ -406,6 +406,12 @@ struct HostConnectionView: View {
             if client.isPaired() {
                 let apps = try await client.fetchAppList()
                 phase = .appList(info, apps)
+                #if DEBUG
+                // Live experiment (DEBUG only): launch without a click.
+                if let app = PyroWaveExperimentRunner.shared.appToLaunch(from: apps) {
+                    await launch(app: app, serverInfo: info)
+                }
+                #endif
             } else {
                 phase = .needsPairing(info)
             }
@@ -447,6 +453,12 @@ struct HostConnectionView: View {
             pyroWaveFallbackReport = report
             await performLaunch(app: app, serverInfo: serverInfo, pyroWave: .useHEVC)
         } else if !report.warnings.isEmpty {
+            #if DEBUG
+            if PyroWaveExperimentRunner.shared.isRunning {
+                await performLaunch(app: app, serverInfo: serverInfo, pyroWave: .auto)
+                return
+            }
+            #endif
             phase = .pyroWaveWarnings(app, serverInfo, report)
         } else {
             await performLaunch(app: app, serverInfo: serverInfo, pyroWave: .auto)
@@ -540,6 +552,12 @@ struct HostConnectionView: View {
             phase = .negotiating(app, result)
             await negotiate(app: app, result: result, display: streamDisplay, codec: codec, hdr: enableHdr, fallbackBitrateKbps: fallbackBitrate)
         } catch {
+            #if DEBUG
+            if isAppAlreadyRunning(error), PyroWaveExperimentRunner.shared.consumeRetry() {
+                await stopAndRetry(app: app, serverInfo: serverInfo)
+                return
+            }
+            #endif
             phase = .launchFailed(app, serverInfo, error)
         }
     }

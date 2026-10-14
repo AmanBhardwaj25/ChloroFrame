@@ -124,6 +124,26 @@ struct ContentView: View {
         .sheet(isPresented: $showControlsHelp) {
             StreamControlsHelpView()
         }
+        #if DEBUG
+        // Live PyroWave experiment (DEBUG only): config file at launch, or Stream menu item.
+        .task {
+            await PyroWaveExperimentRunner.shared.startIfRequested(
+                hosts: { hostManager.hosts },
+                present: { host in connectingHost = host },
+                dismiss: { connectingHost = nil },
+                streamState: streamState)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .runPyroWaveExperiment)) { _ in
+            Task {
+                await PyroWaveExperimentRunner.shared.run(
+                    .d10Default,
+                    hosts: { hostManager.hosts },
+                    present: { host in connectingHost = host },
+                    dismiss: { connectingHost = nil },
+                    streamState: streamState)
+            }
+        }
+        #endif
         .onReceive(NotificationCenter.default.publisher(for: .showAddHost)) { _ in
             showAddressEntry = true
         }

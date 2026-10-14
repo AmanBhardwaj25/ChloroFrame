@@ -22,6 +22,14 @@ struct StreamCommands: Commands {
             }
             .keyboardShortcut("d", modifiers: [.command, .shift])
 
+            #if DEBUG
+            Divider()
+
+            Button("Run PyroWave Experiment") {
+                NotificationCenter.default.post(name: .runPyroWaveExperiment, object: nil)
+            }
+            #endif
+
             Divider()
 
             Button("Toggle Full Screen") {

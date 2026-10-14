@@ -181,6 +181,10 @@ final class RtpVideoQueue {
     private var payloadLostCount = 0
     /// When the silence deadline expires (`clock()` seconds), or nil when none is armed.
     private(set) var pendingDeadline: Double?
+    // The last frame delivered with holes, so packets that arrive for it afterwards can be
+    // counted and timed (diagnostics only).
+    private var lastPartialFrame: UInt32?
+    private var lastPartialDeliveredAt = 0.0
 
     private var packetLogCount = 0
     private var blockLogCount = 0
@@ -235,6 +239,9 @@ final class RtpVideoQueue {
 
         // Reject frames that are behind our current position.
         guard frameIndex >= currentFrameNumber else {
+            if partialDelivery, frameIndex == lastPartialFrame {
+                stats?.recordLatePacket(ms: (clock() - lastPartialDeliveredAt) * 1000)
+            }
             return reject("old frame frame=\(frameIndex) current=\(currentFrameNumber) seq=\(seqNum)")
         }
 
@@ -254,9 +261,14 @@ final class RtpVideoQueue {
                 if frameIndex != currentFrameNumber {
                     // Frame changed. PyroWave delivers the final block with its holes zero filled
                     // when the rules allow; every other case is an unrecoverable frame.
-                    if partialDelivery, multiFecCurrentBlock == multiFecLastBlock, deliverPartialFrame() {
+                    if partialDelivery, multiFecCurrentBlock == multiFecLastBlock, deliverPartialFrame(byDeadline: false) {
                         // Delivered; deliverPartialFrame advanced the frame state.
                     } else {
+                        if partialDelivery {
+                            // A later block that never started is a whole missing block.
+                            notePartialDrop(multiFecCurrentBlock != multiFecLastBlock
+                                            ? .wholeBlock : (partialBlocker() ?? .ineligible))
+                        }
                         if !reportedLostFrame {
                             onFrameLost?(currentFrameNumber)
                             stats?.recordFrameLost()
@@ -273,6 +285,10 @@ final class RtpVideoQueue {
                     multiFecCurrentBlock = fecBlock
                 } else {
                     // Same frame, different FEC block — we missed a block; can't recover.
+                    if partialDelivery {
+                        notePartialDrop(fecBlock == multiFecCurrentBlock &+ 1
+                                        ? (partialBlocker() ?? .ineligible) : .wholeBlock)
+                    }
                     if !reportedLostFrame {
                         onFrameLost?(currentFrameNumber)
                         stats?.recordFrameLost()
@@ -288,6 +304,7 @@ final class RtpVideoQueue {
                 // Old frame ended cleanly but we skipped some frames. A PyroWave frame that was
                 // abandoned between blocks (a whole block never arrived) is a lost frame.
                 if partialDelivery, frameAssemblyPackets > 0 {
+                    notePartialDrop(.wholeBlock)
                     onFrameLost?(currentFrameNumber)
                     stats?.recordFrameLost()
                 }
@@ -300,6 +317,7 @@ final class RtpVideoQueue {
                 let expectedBlock: UInt8 = frameIndex == currentFrameNumber && frameAssemblyPackets > 0
                     ? multiFecCurrentBlock : 0
                 if fecBlock != expectedBlock {
+                    notePartialDrop(expectedBlock == 0 ? .firstPacket : .wholeBlock)
                     if !(frameIndex == currentFrameNumber && reportedLostFrame) {
                         onFrameLost?(frameIndex)
                         stats?.recordFrameLost()
@@ -608,34 +626,50 @@ final class RtpVideoQueue {
     /// packet (frame header and sequence header) is missing, the frame does not announce a
     /// critical prefix or does not flag record starts, or a critical packet is among the missing.
     private func stageIncompleteBlock() -> Bool {
-        guard partialDelivery, bufferDataShards > 0 else { return false }
+        guard partialBlocker() == nil else { return false }
+        stageBlock(fillLost: true)
+        return true
+    }
+
+    /// Why the current (incomplete) block cannot be staged with zeros, or nil when it can.
+    /// Changes nothing.
+    private func partialBlocker() -> PartialDropReasonLocal? {
+        guard partialDelivery, bufferDataShards > 0 else { return .ineligible }
         let base = kRtpHeaderSize + kNvPacketSize
         var critical = currentCriticalPackets
         if multiFecCurrentBlock != 0 {
-            guard currentFrameFlagsUsable else { return false }
+            guard currentFrameFlagsUsable else { return .ineligible }
         } else {
-            guard slotUsed[0], slotFlags[0] & kFlagSOF != 0 else { return false }
+            guard slotUsed[0], slotFlags[0] & kFlagSOF != 0 else { return .firstPacket }
             let row = slotData[0]
             // Only the 8-byte short header carries the critical packet count and lastPayloadLen.
-            guard row.count > base + 8, row[base] == 0x01 else { return false }
-            guard row[kRtpHeaderSize + 9] & kExtraFlagRecordStart != 0 else { return false }
+            guard row.count > base + 8, row[base] == 0x01 else { return .ineligible }
+            guard row[kRtpHeaderSize + 9] & kExtraFlagRecordStart != 0 else { return .ineligible }
             critical = FrameMeta.parseShortHeader(row, headerOffset: base).pyroWaveCriticalPackets
         }
-        guard critical > 0 else { return false }
+        guard critical > 0 else { return .ineligible }
         let staged = payloadStarts.count
         if staged < critical {
-            for i in 0..<bufferDataShards where !slotUsed[i] && staged + i < critical { return false }
+            for i in 0..<bufferDataShards where !slotUsed[i] && staged + i < critical { return .critical }
         }
-        stageBlock(fillLost: true)
-        return true
+        return nil
+    }
+
+    private typealias PartialDropReasonLocal = StreamStatsCollector.PartialDropReason
+
+    private func notePartialDrop(_ reason: PartialDropReasonLocal) {
+        if partialDelivery { stats?.recordPartialDrop(reason) }
     }
 
     /// The final block is incomplete and its frame is ending: stage it with zeros and emit the
     /// frame. Leaves the queue at the start of the next frame. False (nothing changed) when the
     /// partial delivery rules are not met.
-    private func deliverPartialFrame() -> Bool {
+    private func deliverPartialFrame(byDeadline: Bool) -> Bool {
         guard stageIncompleteBlock() else { return false }
         pendingDeadline = nil
+        stats?.recordPartialRelease(byDeadline: byDeadline)
+        lastPartialFrame = currentFrameNumber
+        lastPartialDeliveredAt = clock()
         submitFrame()
         currentFrameNumber &+= 1
         multiFecCurrentBlock = 0
@@ -664,7 +698,7 @@ final class RtpVideoQueue {
         pendingDeadline = nil
         guard partialDelivery, havePacketsInBlock, bufferParityShards == 0,
               multiFecCurrentBlock == multiFecLastBlock else { return false }
-        return deliverPartialFrame()
+        return deliverPartialFrame(byDeadline: true)
     }
 
     /// Emit the assembled frame via onFrameAssembled as a borrowed buffer view.

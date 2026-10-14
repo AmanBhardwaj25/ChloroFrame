@@ -261,6 +261,11 @@ final class RTPVideoReceiver {
         var transientErrorCount = 0
         // PyroWave only (D7): time each addPacket so the slowest one per frame is known.
         let timePackets = videoCodec == .pyrowave
+        #if DEBUG
+        // D10 experiment: software loss applied before the queue, so the run needs no root.
+        var lossInjector = videoCodec == .pyrowave ? PyroWaveExperimentControl.makeInjector() : nil
+        var reportedDrops = 0
+        #endif
         while !stopping.withLock({ $0 }) {
             // PyroWave partial delivery: while a silence deadline is armed (only between the last
             // data packet of a frame with holes and the next frame, so a few times a minute on a
@@ -279,6 +284,15 @@ final class RTPVideoReceiver {
             let n = recv(fd, &buf, buf.count, 0)
             if n > 0 {
                 stats?.recordPacket(bytes: n)
+                #if DEBUG
+                if lossInjector != nil, lossInjector!.shouldDrop() {
+                    if lossInjector!.dropped - reportedDrops >= 64 {
+                        PyroWaveExperimentControl.addInjected(lossInjector!.dropped - reportedDrops)
+                        reportedDrops = lossInjector!.dropped
+                    }
+                    continue
+                }
+                #endif
                 // The queue copies what it keeps before returning, so the receive
                 // buffer can be handed over as a borrowed view — no Data per datagram.
                 if timePackets {
@@ -312,6 +326,11 @@ final class RTPVideoReceiver {
                 break
             }
         }
+        #if DEBUG
+        if let injector = lossInjector {
+            PyroWaveExperimentControl.addInjected(injector.dropped - reportedDrops)
+        }
+        #endif
         close(fd)
     }
 

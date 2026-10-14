@@ -153,6 +153,7 @@ final class StreamStatsCollector {
         var framesDropped: Int = 0
         var framesPartial: Int = 0
         var packetsLostInPartial: Int = 0
+        var partialDiagnostics = PartialDiagnostics()
 
         // RFC 3550 §6.4.1 running jitter in 90 kHz ticks
         var jitterEst: Double = 0
@@ -235,6 +236,43 @@ final class StreamStatsCollector {
     /// Cumulative partial and lost frame counts (tests and the DEBUG line read the snapshot instead).
     var framesPartialSoFar: Int { lock.withLock { acc.framesPartial } }
     var framesLostSoFar: Int { lock.withLock { acc.framesLost } }
+
+    /// Cumulative frame-level counters for the experiment runner and tests, read under one lock.
+    func experimentSnapshot() -> PyroWaveExperimentSample {
+        lock.withLock {
+            var s = PyroWaveExperimentSample()
+            s.framesAssembled = acc.framesAssembled
+            s.framesLost = acc.framesLost
+            s.framesPartial = acc.framesPartial
+            s.packetsLostInPartial = acc.packetsLostInPartial
+            s.packetsReceived = acc.packetsReceived
+            s.framesDropped = acc.framesDropped
+            s.diagnostics = acc.partialDiagnostics
+            return s
+        }
+    }
+
+    /// PyroWave partial delivery diagnostics (D10). Cheap integer updates on the receive thread.
+    enum PartialDropReason { case firstPacket, wholeBlock, critical, ineligible }
+    func recordPartialDrop(_ reason: PartialDropReason) {
+        lock.withLock {
+            switch reason {
+            case .firstPacket: acc.partialDiagnostics.dropFirstPacket += 1
+            case .wholeBlock: acc.partialDiagnostics.dropWholeBlock += 1
+            case .critical: acc.partialDiagnostics.dropCritical += 1
+            case .ineligible: acc.partialDiagnostics.dropIneligible += 1
+            }
+        }
+    }
+    func recordPartialRelease(byDeadline: Bool) {
+        lock.withLock {
+            if byDeadline { acc.partialDiagnostics.releasedByDeadline += 1 }
+            else { acc.partialDiagnostics.releasedAtBoundary += 1 }
+        }
+    }
+    func recordLatePacket(ms: Double) {
+        lock.withLock { acc.partialDiagnostics.addLate(ms: ms) }
+    }
 
     func recordPacketsRecovered(_ n: Int) {
         lock.withLock { acc.packetsRecovered += n }
