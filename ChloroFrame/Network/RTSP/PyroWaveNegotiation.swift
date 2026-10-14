@@ -77,6 +77,15 @@ nonisolated enum PyroWaveNegotiation {
         return Profile(chroma444: chroma.use444, tenBit: false, fallbackReason: chroma.fallbackReason)
     }
 
+    /// Whether "the app supports HDR" holds when no app is chosen yet (the readiness button and
+    /// Test network), from the app list's `IsHdrSupported` flags. Vibeshine sets that flag the
+    /// same for every app (nvhttp.cpp, from HEVC or AV1 Main10), so any app stands for all, and
+    /// those actions then compute the same profile and bitrate as a launch. An empty list
+    /// counts as yes.
+    static func hostAppsSupportHDR(_ appFlags: [Bool]) -> Bool {
+        appFlags.isEmpty || appFlags.contains(true)
+    }
+
     /// Call only when `config.codec == .pyrowave`.
     static func resolve(config: StreamConfig, sdp: SDPInfo, networkClass: StreamNetworkClass) -> Outcome {
         var result = config

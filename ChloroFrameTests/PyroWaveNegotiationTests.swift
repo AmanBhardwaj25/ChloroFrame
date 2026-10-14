@@ -222,6 +222,47 @@ final class PyroWaveNegotiationTests: XCTestCase {
         }
     }
 
+    func testProfileUsesHDR444WhenItIsTheOnlyTenBitProfile() {
+        let p = PyroWaveNegotiation.chooseProfile(userWants444: false, userWantsHDR: true,
+                                                  hostSCM: m8 | m444 | mHDR444)
+        XCTAssertEqual(p.label, "4:4:4 10-bit")
+        XCTAssertTrue(p.fallbackReason?.contains("only SCM_PYROWAVE_HDR10_444") ?? false)
+
+        let q = PyroWaveNegotiation.chooseProfile(userWants444: true, userWantsHDR: true, hostSCM: m8 | mHDR444)
+        XCTAssertEqual(q, .init(chroma444: true, tenBit: true, fallbackReason: nil))
+    }
+
+    // MARK: - No-app actions agree with the launch (review B1)
+
+    func testHostAppsSupportHDRFollowsTheHostWideFlag() {
+        XCTAssertTrue(PyroWaveNegotiation.hostAppsSupportHDR([]))
+        XCTAssertTrue(PyroWaveNegotiation.hostAppsSupportHDR([true, true]))
+        XCTAssertFalse(PyroWaveNegotiation.hostAppsSupportHDR([false, false, false]))
+    }
+
+    /// The readiness button and Test network have no app; the launch does. With Vibeshine's
+    /// host-wide IsHdrSupported both must reach the same profile and default bitrate, or C16
+    /// never matches the cached network test (it compares bitrates exactly). The HDR setting
+    /// and display are taken as on here, which is the case where the two used to differ.
+    func testNoAppActionsAndLaunchAgreeOnProfileAndBitrate() {
+        let scm = m8 | m444 | mHDR | mHDR444
+        for appFlag in [false, true] {
+            for want444 in [false, true] {
+                let apps = [appFlag, appFlag, appFlag]
+                let button = PyroWaveNegotiation.chooseProfile(
+                    userWants444: want444,
+                    userWantsHDR: PyroWaveNegotiation.hostAppsSupportHDR(apps), hostSCM: scm)
+                let launch = PyroWaveNegotiation.chooseProfile(
+                    userWants444: want444, userWantsHDR: appFlag, hostSCM: scm)
+                XCTAssertEqual(button, launch, "app HDR \(appFlag), 4:4:4 \(want444)")
+                func kbps(_ p: PyroWaveNegotiation.Profile) -> Int {
+                    PyroWaveBitrate.defaultKbps(width: 3024, height: 1890, fps: 60, hdr10: p.tenBit, yuv444: p.chroma444)
+                }
+                XCTAssertEqual(kbps(button), kbps(launch))
+            }
+        }
+    }
+
     // MARK: - Host HDR mode message (0x010e)
 
     func testHdrModeMessageRoundTripsEncrypted() {

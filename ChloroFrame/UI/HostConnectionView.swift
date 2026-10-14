@@ -282,13 +282,13 @@ struct HostConnectionView: View {
             Divider()
             HStack(spacing: 8) {
                 Button("Check PyroWave readiness") {
-                    Task { await checkPyroWaveReadiness(serverInfo: info) }
+                    Task { await checkPyroWaveReadiness(serverInfo: info, apps: apps) }
                 }
                 .disabled(pyroWaveChecking)
                 .help("Runs the PyroWave readiness checks for this host and shows every result, even when PyroWave is not the selected codec.")
                 if pyroWaveChecking { ProgressView().controlSize(.small) }
                 Button("Test network") {
-                    Task { await runNetworkTest(serverInfo: info) }
+                    Task { await runNetworkTest(serverInfo: info, apps: apps) }
                 }
                 .disabled(networkTesting || pyroWaveChecking)
                 .help("Sends about 3 seconds of test traffic from the host at the PyroWave bitrate and grades loss and jitter on this path. The host refuses while a stream is running.")
@@ -468,8 +468,9 @@ struct HostConnectionView: View {
         let display = buildDisplayConfig(base: DisplayConfig.detect())
         let report = await PyroWaveAuditRunner.run(
             client: client, serverInfo: serverInfo, display: display,
-            requestedKbps: pyroWaveRequestedKbps(display: display, serverInfo: serverInfo, app: app),
-            userWantsHDR: enableHDR && display.hdr && app.isHDRSupported,
+            requestedKbps: pyroWaveRequestedKbps(display: display, serverInfo: serverInfo,
+                                                 appSupportsHDR: app.isHDRSupported),
+            userWantsHDR: pyroWaveWantsHDR(display: display, appSupportsHDR: app.isHDRSupported),
             userWants444: pyroWave444, reason: "launch"
         )
         if report.blocked {
@@ -490,42 +491,53 @@ struct HostConnectionView: View {
 
     // The total bitrate a PyroWave launch will request: the user's override, else the PyroWave
     // default. Mirrors the codec == .pyrowave branch of performLaunch.
-    private func pyroWaveRequestedKbps(display: DisplayConfig, serverInfo: ServerInfo, app: SunshineApp? = nil) -> Int {
-        let profile = pyroWaveProfile(display: display, serverInfo: serverInfo, app: app)
+    private func pyroWaveRequestedKbps(display: DisplayConfig, serverInfo: ServerInfo, appSupportsHDR: Bool) -> Int {
+        let profile = pyroWaveProfile(display: display, serverInfo: serverInfo, appSupportsHDR: appSupportsHDR)
         return overrideBitrate > 0
             ? overrideBitrate
             : PyroWaveBitrate.defaultKbps(width: display.width, height: display.height, fps: display.fps,
                                           hdr10: profile.tenBit, yuv444: profile.chroma444)
     }
 
+    // HDR counts as asked for when the setting is on, the display can show it and the app
+    // supports it: the same `wantHdr` performLaunch computes. Callers with no app chosen yet
+    // (the readiness button, Test network) pass `PyroWaveNegotiation.hostAppsSupportHDR`, so
+    // they land on the same profile and bitrate as the launch and the C16 cache matches.
+    private func pyroWaveWantsHDR(display: DisplayConfig, appSupportsHDR: Bool) -> Bool {
+        enableHDR && display.hdr && appSupportsHDR
+    }
+
     // The profile this launch will use (D8 and D9): 4:4:4 and 10-bit only when asked for and
-    // offered by the host. HDR counts as asked for when the setting is on, the display can show
-    // it and (when known) the app supports it, the same `wantHdr` performLaunch computes.
-    private func pyroWaveProfile(display: DisplayConfig, serverInfo: ServerInfo, app: SunshineApp?) -> PyroWaveNegotiation.Profile {
+    // offered by the host.
+    private func pyroWaveProfile(display: DisplayConfig, serverInfo: ServerInfo, appSupportsHDR: Bool) -> PyroWaveNegotiation.Profile {
         PyroWaveNegotiation.chooseProfile(
             userWants444: pyroWave444,
-            userWantsHDR: enableHDR && display.hdr && (app?.isHDRSupported ?? true),
+            userWantsHDR: pyroWaveWantsHDR(display: display, appSupportsHDR: appSupportsHDR),
             hostSCM: serverInfo.codecModeSupport)
     }
 
-    private func checkPyroWaveReadiness(serverInfo: ServerInfo) async {
+    private func checkPyroWaveReadiness(serverInfo: ServerInfo, apps: [SunshineApp]) async {
         pyroWaveChecking = true
         defer { pyroWaveChecking = false }
         let display = buildDisplayConfig(base: DisplayConfig.detect())
+        let appsHDR = PyroWaveNegotiation.hostAppsSupportHDR(apps.map(\.isHDRSupported))
         pyroWaveCheckReport = await PyroWaveAuditRunner.run(
             client: client, serverInfo: serverInfo, display: display,
-            requestedKbps: pyroWaveRequestedKbps(display: display, serverInfo: serverInfo),
-            userWantsHDR: enableHDR && display.hdr, userWants444: pyroWave444, forceRefresh: true, reason: "button"
+            requestedKbps: pyroWaveRequestedKbps(display: display, serverInfo: serverInfo, appSupportsHDR: appsHDR),
+            userWantsHDR: pyroWaveWantsHDR(display: display, appSupportsHDR: appsHDR),
+            userWants444: pyroWave444, forceRefresh: true, reason: "button"
         )
     }
 
-    private func runNetworkTest(serverInfo: ServerInfo) async {
+    private func runNetworkTest(serverInfo: ServerInfo, apps: [SunshineApp]) async {
         networkTesting = true
         defer { networkTesting = false }
         let display = buildDisplayConfig(base: DisplayConfig.detect())
+        let appsHDR = PyroWaveNegotiation.hostAppsSupportHDR(apps.map(\.isHDRSupported))
         networkTestResult = await PyroWaveNetworkTest.run(
             client: client, display: display,
-            requestedKbps: pyroWaveRequestedKbps(display: display, serverInfo: serverInfo), reason: "button")
+            requestedKbps: pyroWaveRequestedKbps(display: display, serverInfo: serverInfo, appSupportsHDR: appsHDR),
+            reason: "button")
     }
 
     private func performLaunch(app: SunshineApp, serverInfo: ServerInfo, pyroWave: PyroWaveLaunchChoice) async {
@@ -562,8 +574,9 @@ struct HostConnectionView: View {
         // PyroWave (D9): HDR10 only when the host advertises a 10-bit profile; otherwise the
         // stream is 8-bit SDR and HDR is off here, which keeps /launch hdrMode and RTSP in
         // agreement. The host's 0x010e message later says whether the 10-bit picture is PQ.
-        let pwProfile = PyroWaveNegotiation.chooseProfile(
-            userWants444: pyroWave444, userWantsHDR: wantHdr, hostSCM: serverInfo.codecModeSupport)
+        // Same helper as the audit and Test network, so all of them agree on the profile.
+        let pwProfile = pyroWaveProfile(display: display, serverInfo: serverInfo,
+                                        appSupportsHDR: app.isHDRSupported)
         let enableHdr = codec == .pyrowave ? (wantHdr && pwProfile.tenBit) : (wantHdr && (codec == .hevc || codec == .av1))
         #if DEBUG
         DebugFileLog.write("[ChloroFrame][launch] preferredCodec=\(preferredCodec) supportsPyroWave=\(VideoCapabilities.supportsPyroWave) "

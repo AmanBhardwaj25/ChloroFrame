@@ -92,19 +92,25 @@ final class PyroWaveExperimentRunner {
         if let want = cfg.chroma444 { UserDefaults.standard.set(want, forKey: "pyroWave444") }
         let storedHDR = UserDefaults.standard.object(forKey: "enableHDR")
         if let want = cfg.hdr { UserDefaults.standard.set(want, forKey: "enableHDR") }
-        defer {
+        // Puts back what the run changed. Called by the defer and again right before quitWhenDone
+        // terminates, because NSApp.terminate exits the process and the defer never runs then.
+        // Running it twice is harmless.
+        let restoreSettings = {
             if cfg.hdr != nil {
                 if let storedHDR { UserDefaults.standard.set(storedHDR, forKey: "enableHDR") }
                 else { UserDefaults.standard.removeObject(forKey: "enableHDR") }
             }
-            isRunning = false
-            config = nil
             if cfg.chroma444 != nil {
                 if let storedChroma444 { UserDefaults.standard.set(storedChroma444, forKey: "pyroWave444") }
                 else { UserDefaults.standard.removeObject(forKey: "pyroWave444") }
             }
             UserDefaults.standard.removeObject(forKey: "pyroWavePartialDelivery")
             PyroWaveExperimentControl.setLoss(percent: 0, burstLength: 1)
+        }
+        defer {
+            isRunning = false
+            config = nil
+            restoreSettings()
         }
 
         let all = hosts()
@@ -150,6 +156,8 @@ final class PyroWaveExperimentRunner {
         NSSound(named: "Glass")?.play()
         if cfg.quitWhenDone {
             try? await Task.sleep(nanoseconds: 1_000_000_000)
+            restoreSettings()
+            UserDefaults.standard.synchronize()
             NSApp.terminate(nil)
         }
     }
