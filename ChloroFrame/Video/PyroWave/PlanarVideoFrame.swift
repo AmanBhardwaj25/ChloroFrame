@@ -12,13 +12,6 @@
 import Foundation
 import Metal
 
-/// D3 placeholder. D4 replaces this with the real range/matrix/transfer type in
-/// PlanarColorParams.swift; keep the init labels so call sites do not change.
-nonisolated struct PlanarColorParams: Equatable {
-    var bitDepth: Int
-    var fullRange: Bool
-}
-
 nonisolated final class PlanarVideoFrame: @unchecked Sendable {
     let y: MTLTexture
     let cb: MTLTexture
@@ -90,7 +83,8 @@ nonisolated final class PlanarFramePool: @unchecked Sendable {
             return nil
         }
         return PlanarVideoFrame(y: planes.y, cb: planes.cb, cr: planes.cr,
-                                color: PlanarColorParams(bitDepth: bitDepth, fullRange: false),
+                                color: PlanarColorParams(bitDepth: bitDepth, fullRange: false,
+                                                         matrix: .bt709, transfer: .sdr),
                                 pool: self)
     }
 

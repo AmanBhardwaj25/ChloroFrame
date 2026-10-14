@@ -122,3 +122,67 @@ fragment float4 fragmentShaderYUVHDR(VertexOut in [[stage_in]],
     // so EDR 1.0 = 100 nits, EDR 100.0 = 10 000 nits (display clips at its own peak).
     return float4(linear / 0.01, 1.0);
 }
+
+// ── Planar Y/Cb/Cr (PyroWave) ────────────────────────────────────────────────
+//
+// Three single-channel textures: Y at texture(0), Cb at texture(1), Cr at
+// texture(2). Samples are normalized code values, code / (2^N - 1), for both
+// 8-bit (r8Unorm) and 10-bit (r16Unorm) planes; range and matrix come from the
+// uniform block, so none of the NV12/P010 constants above apply.
+//
+// Chroma is sampled with the same normalized coordinates as luma: PyroWave 4:2:0
+// chroma is sited at the center of each 2x2 luma quad, which is exactly what a
+// linear sampler over a half-size texture reproduces. 4:4:4 needs no special case.
+//
+// Layout must match PlanarShaderUniforms in PlanarColorParams.swift (80 bytes).
+struct PlanarColorUniforms {
+    float4 scale;   // xyz: Y, Cb, Cr scale
+    float4 bias;    // xyz: Y, Cb, Cr bias
+    float4 rowR;    // xyz: Y'CbCr -> R' row (Cb/Cr centered on 0)
+    float4 rowG;
+    float4 rowB;
+};
+
+static float3 planar_ycbcr(float3 s, constant PlanarColorUniforms &u) {
+    return s * u.scale.xyz + u.bias.xyz;
+}
+
+// SDR: converted R'G'B' is clamped and returned, like fragmentShaderYUV.
+fragment float4 fragmentShaderPlanarSDR(VertexOut in [[stage_in]],
+                                        texture2d<float> yTexture  [[texture(0)]],
+                                        texture2d<float> cbTexture [[texture(1)]],
+                                        texture2d<float> crTexture [[texture(2)]],
+                                        constant PlanarColorUniforms &u [[buffer(0)]]) {
+    constexpr sampler s(mag_filter::linear, min_filter::linear);
+
+    float3 raw = float3(yTexture.sample(s, in.texCoord).r,
+                        cbTexture.sample(s, in.texCoord).r,
+                        crTexture.sample(s, in.texCoord).r);
+    float3 ycc = planar_ycbcr(raw, u);
+
+    float3 rgb = float3(dot(u.rowR.xyz, ycc), dot(u.rowG.xyz, ycc), dot(u.rowB.xyz, ycc));
+    return float4(clamp(rgb, 0.0, 1.0), 1.0);
+}
+
+// PQ: same conversion, then the PQ EOTF per channel and the same EDR scaling as
+// fragmentShaderYUVHDR (1.0 = 100 nits). Clamping mirrors that shader.
+fragment float4 fragmentShaderPlanarPQ(VertexOut in [[stage_in]],
+                                       texture2d<float> yTexture  [[texture(0)]],
+                                       texture2d<float> cbTexture [[texture(1)]],
+                                       texture2d<float> crTexture [[texture(2)]],
+                                       constant PlanarColorUniforms &u [[buffer(0)]]) {
+    constexpr sampler s(mag_filter::linear, min_filter::linear);
+
+    float3 raw = float3(yTexture.sample(s, in.texCoord).r,
+                        cbTexture.sample(s, in.texCoord).r,
+                        crTexture.sample(s, in.texCoord).r);
+    float3 ycc = planar_ycbcr(raw, u);
+    ycc.x  = clamp(ycc.x, 0.0, 1.0);
+    ycc.yz = clamp(ycc.yz, -0.5, 0.5);
+
+    float3 pq = clamp(float3(dot(u.rowR.xyz, ycc), dot(u.rowG.xyz, ycc), dot(u.rowB.xyz, ycc)),
+                      0.0, 1.0);
+
+    float3 linear = float3(pq_eotf(pq.r), pq_eotf(pq.g), pq_eotf(pq.b));
+    return float4(linear / 0.01, 1.0);
+}

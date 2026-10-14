@@ -491,6 +491,14 @@ extension InputCaptureMetalView: NSTextInputClient {
     func characterIndex(for point: NSPoint) -> Int { NSNotFound }
 }
 
+/// What the renderer can present. NV12/P010 frames come from VideoToolbox as pixel
+/// buffers; PyroWave frames are three pooled planar textures that stay out of the
+/// pool for as long as something (queue, last-rendered slot, GPU) holds the frame.
+enum RenderableFrame {
+    case pixelBuffer(CVPixelBuffer)
+    case planar(PlanarVideoFrame)
+}
+
 /// Handles Metal rendering of decoded NV12/P010 video frames via CVMetalTextureCache.
 /// Zero-copy: CVPixelBuffer IOSurfaces are vended directly as Y + UV Metal textures.
 ///
@@ -507,7 +515,7 @@ extension InputCaptureMetalView: NSTextInputClient {
 /// isHdr (from RTSP negotiation) is used only for the initial layer pre-warm; frame metadata
 /// is the authoritative source starting from the first decoded frame.
 private struct QueuedFrame {
-    let pixelBuffer: CVPixelBuffer
+    let frame: RenderableFrame
     let pts: CMTime          // Monotonic presentation time.
     let enqueuedAt: Double   // CACurrentMediaTime() at enqueue
     var targetWall: Double   // CACurrentMediaTime() when this frame should be presented
@@ -520,6 +528,9 @@ class MetalVideoRenderer {
     private let commandQueue: MTLCommandQueue
     private let pipelineStateSDR: MTLRenderPipelineState
     private let pipelineStateHDR: MTLRenderPipelineState
+    // Optional on purpose: a planar PSO failure must never stop H.264/HEVC/AV1 rendering.
+    private let pipelineStatePlanarSDR: MTLRenderPipelineState?
+    private let pipelineStatePlanarPQ: MTLRenderPipelineState?
     private var textureCache: CVMetalTextureCache?
     private var drawableSize: CGSize = .zero
     private weak var metalLayer: CAMetalLayer?
@@ -548,7 +559,7 @@ class MetalVideoRenderer {
     private var framesEnqueuedTotal: Int = 0
     // Render-thread-only state — no lock needed (only renderTick touches these).
     private var lastDrawTime: Double = 0
-    private var lastRenderedBuffer: CVPixelBuffer? = nil
+    private var lastRenderedFrame: RenderableFrame? = nil
     // HDR metadata is constant for a given pixel format within a stream; cache the
     // three-field check so the per-frame CVBufferCopyAttachment calls happen once.
     private var cachedHDRForFormat: (format: OSType, isHDR: Bool)? = nil
@@ -574,6 +585,9 @@ class MetalVideoRenderer {
         guard let (sdrPSO, hdrPSO) = Self.makeRenderPipelines(device: device) else { return nil }
         self.pipelineStateSDR = sdrPSO
         self.pipelineStateHDR = hdrPSO
+        let planarPSOs = Self.makePlanarPipelines(device: device)
+        self.pipelineStatePlanarSDR = planarPSOs.sdr
+        self.pipelineStatePlanarPQ = planarPSOs.pq
 
         var cache: CVMetalTextureCache?
         CVMetalTextureCacheCreate(kCFAllocatorDefault, nil, device, nil, &cache)
@@ -596,6 +610,21 @@ class MetalVideoRenderer {
         guard let sdrPSO = try? device.makeRenderPipelineState(descriptor: sdrDesc),
               let hdrPSO = try? device.makeRenderPipelineState(descriptor: hdrDesc) else { return nil }
         return (sdrPSO, hdrPSO)
+    }
+
+    /// Planar (PyroWave) pipelines, same rgba16Float attachment as the NV12/P010 ones.
+    private static func makePlanarPipelines(device: MTLDevice)
+        -> (sdr: MTLRenderPipelineState?, pq: MTLRenderPipelineState?) {
+        let library = device.makeDefaultLibrary()
+
+        func makePSO(_ fragment: String) -> MTLRenderPipelineState? {
+            let desc = MTLRenderPipelineDescriptor()
+            desc.vertexFunction   = library?.makeFunction(name: "vertexShader")
+            desc.fragmentFunction = library?.makeFunction(name: fragment)
+            desc.colorAttachments[0].pixelFormat = .rgba16Float
+            return try? device.makeRenderPipelineState(descriptor: desc)
+        }
+        return (makePSO("fragmentShaderPlanarSDR"), makePSO("fragmentShaderPlanarPQ"))
     }
 
     func updateDrawableSize(_ size: CGSize) {
@@ -632,12 +661,16 @@ class MetalVideoRenderer {
         baseWall = nil
         frameQueue.removeAll()
         queueLock.unlock()
-        // lastRenderedBuffer is render-thread-only — don't touch it here.
+        // lastRenderedFrame is render-thread-only (do not touch it here).
         // After reset the last presented drawable stays on glass until new frames arrive.
         StreamLog.log("[ChloroFrame][video] clock anchor reset")
     }
 
     func enqueueFrame(_ pixelBuffer: CVPixelBuffer, pts: CMTime) {
+        enqueueFrame(.pixelBuffer(pixelBuffer), pts: pts)
+    }
+
+    func enqueueFrame(_ frame: RenderableFrame, pts: CMTime) {
         let now = CACurrentMediaTime()
 
         queueLock.lock()
@@ -681,7 +714,7 @@ class MetalVideoRenderer {
             lastStressTime = now
             bufferGrowthLog = growBufferLocked(now: now, reason: "late-arrival")
         }
-        frameQueue.append(QueuedFrame(pixelBuffer: pixelBuffer, pts: pts,
+        frameQueue.append(QueuedFrame(frame: frame, pts: pts,
                                       enqueuedAt: now, targetWall: targetWall))
         framesEnqueuedTotal += 1
         let enqueueDepth = frameQueue.count  // peak depth before render can pop
@@ -788,7 +821,7 @@ class MetalVideoRenderer {
         // previously presented drawable stays on glass for free, and the first
         // frames after stream start are naturally held until playoutDelay elapses
         // (no separate priming state needed).
-        var selectedBuffer: CVPixelBuffer? = nil
+        var selectedFrame: RenderableFrame? = nil
         var selectedEnqueuedAt: Double = 0
         var selectedPTS: CMTime?
         var isStarved = false
@@ -800,7 +833,7 @@ class MetalVideoRenderer {
             // legitimately drains the queue between frames. Real network/decode
             // lateness is detected at enqueue (late-arrival) where it can be
             // measured against the frame's own schedule.
-            if lastRenderedBuffer != nil {
+            if lastRenderedFrame != nil {
                 isStarved = true
             }
         } else {
@@ -824,7 +857,7 @@ class MetalVideoRenderer {
                 lateDropCount = takeIndex
                 let next = frameQueue[takeIndex]
                 frameQueue.removeFirst(takeIndex + 1)
-                selectedBuffer = next.pixelBuffer
+                selectedFrame = next.frame
                 selectedEnqueuedAt = next.enqueuedAt
                 selectedPTS = next.pts
             }
@@ -836,14 +869,14 @@ class MetalVideoRenderer {
         // Single consolidated stats call after lock release.
         let intervalMs = lastDrawTime > 0 ? (now - lastDrawTime) * 1000.0 : 0
 
-        let isNewFrame = selectedBuffer != nil
-        if let buffer = selectedBuffer {
+        let isNewFrame = selectedFrame != nil
+        if let newFrame = selectedFrame {
             lastDrawTime = now
             let ageMs = selectedEnqueuedAt > 0 ? (now - selectedEnqueuedAt) * 1000.0 : 0
             stats?.recordRenderTick(queueDepth: currentDepth, lateDrops: lateDropCount,
                                     drawIntervalMs: intervalMs, frameAgeMs: ageMs, repeated: false)
             repeatedDrawsSincePresent = 0
-            lastRenderedBuffer = buffer
+            lastRenderedFrame = newFrame
         } else if isStarved {
             lastDrawTime = now
             stats?.recordRenderTick(queueDepth: currentDepth, lateDrops: 0,
@@ -866,8 +899,21 @@ class MetalVideoRenderer {
         // to ~21 ms for a vsync slot (observed as 20.8 ms draw intervals + late-drop
         // bursts). A repeat present is ~0.5 ms of GPU via the texture cache and keeps
         // the display link pinned at the stream rate.
-        guard let pixelBuffer = selectedBuffer ?? lastRenderedBuffer, let cache = textureCache,
-              let layer = metalLayer else { return }
+        guard let frame = selectedFrame ?? lastRenderedFrame, let layer = metalLayer else { return }
+        switch frame {
+        case .pixelBuffer(let pixelBuffer):
+            drawPixelBuffer(pixelBuffer, layer: layer, isNewFrame: isNewFrame,
+                            selectedPTS: selectedPTS, currentDepth: currentDepth)
+        case .planar(let planar):
+            drawPlanar(planar, layer: layer, isNewFrame: isNewFrame,
+                       selectedPTS: selectedPTS, currentDepth: currentDepth)
+        }
+    }
+
+    /// NV12/P010 draw path: the pre-PyroWave body of `renderTick`, moved here unchanged.
+    private func drawPixelBuffer(_ pixelBuffer: CVPixelBuffer, layer: CAMetalLayer,
+                                 isNewFrame: Bool, selectedPTS: CMTime?, currentDepth: Int) {
+        guard let cache = textureCache else { return }
         guard let commandBuffer = commandQueue.makeCommandBuffer() else { return }
 
         let w = CVPixelBufferGetWidth(pixelBuffer)
@@ -961,6 +1007,65 @@ class MetalVideoRenderer {
         if isNewFrame && presentLogCount < 3 {
             presentLogCount += 1
             StreamLog.log("[ChloroFrame][video] present pts=\(selectedPTS?.value ?? -1) fmt=\(isP010 ? "P010" : "NV12") hdr=\(isFrameHDR) depth=\(currentDepth)")
+        }
+    }
+
+    /// PyroWave draw path: three single-channel planes, color params as a small uniform.
+    private func drawPlanar(_ frame: PlanarVideoFrame, layer: CAMetalLayer,
+                            isNewFrame: Bool, selectedPTS: CMTime?, currentDepth: Int) {
+        guard let pso = frame.color.isPQ ? pipelineStatePlanarPQ : pipelineStatePlanarSDR else {
+            if textureFailureLogCount < 3 {
+                textureFailureLogCount += 1
+                StreamLog.log("[ChloroFrame][video] planar pipeline unavailable")
+            }
+            return
+        }
+        guard let commandBuffer = commandQueue.makeCommandBuffer() else { return }
+
+        // HDR-ness comes from the frame's transfer function and feeds the same layer
+        // switch as the pixel-buffer path.
+        let isFrameHDR = frame.color.isPQ
+        if isFrameHDR != lastDetectedHDR {
+            lastDetectedHDR = isFrameHDR
+            DispatchQueue.main.async { [weak layer] in
+                layer?.wantsExtendedDynamicRangeContent = isFrameHDR
+                layer?.colorspace = isFrameHDR ? CGColorSpace(name: CGColorSpace.extendedLinearITUR_2020) : nil
+            }
+        }
+
+        guard let drawable = layer.nextDrawable() else {
+            if textureFailureLogCount < 3 {
+                textureFailureLogCount += 1
+                StreamLog.log("[ChloroFrame][video] nextDrawable returned nil")
+            }
+            return
+        }
+
+        let rpd = MTLRenderPassDescriptor()
+        rpd.colorAttachments[0].texture     = drawable.texture
+        rpd.colorAttachments[0].loadAction  = .clear
+        rpd.colorAttachments[0].clearColor  = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 1)
+        rpd.colorAttachments[0].storeAction = .store
+
+        guard let enc = commandBuffer.makeRenderCommandEncoder(descriptor: rpd) else { return }
+        var uniforms = frame.color.shaderUniforms
+        enc.setRenderPipelineState(pso)
+        enc.setFragmentTexture(frame.y,  index: 0)
+        enc.setFragmentTexture(frame.cb, index: 1)
+        enc.setFragmentTexture(frame.cr, index: 2)
+        enc.setFragmentBytes(&uniforms, length: MemoryLayout<PlanarShaderUniforms>.stride, index: 0)
+        enc.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
+        enc.endEncoding()
+
+        // The frame owns the pooled textures and returns them on deinit. Hold it until
+        // the GPU has finished reading, or the decoder could overwrite them mid-draw.
+        commandBuffer.addCompletedHandler { _ in withExtendedLifetime(frame) {} }
+        commandBuffer.present(drawable)
+        commandBuffer.commit()
+
+        if isNewFrame && presentLogCount < 3 {
+            presentLogCount += 1
+            StreamLog.log("[ChloroFrame][video] present pts=\(selectedPTS?.value ?? -1) fmt=planar\(frame.color.bitDepth) hdr=\(isFrameHDR) depth=\(currentDepth)")
         }
     }
 }
