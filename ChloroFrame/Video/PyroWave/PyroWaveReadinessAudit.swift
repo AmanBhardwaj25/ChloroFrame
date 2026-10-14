@@ -202,7 +202,7 @@ nonisolated struct PyroWaveAuditInputs: Sendable {
     // C13
     var suppressAWDLEnabled = false
     var awdlHelperInstalled = false
-    // C14
+    // C14. userWantsHDR means the user wants HDR and the display and app can carry it.
     var userWantsHDR = false
     var userWants444 = false
     // C15. nil when the benchmark could not run. Average GPU milliseconds per frame at the stream size.
@@ -464,12 +464,12 @@ nonisolated enum PyroWaveReadinessAudit {
         if m & ServerInfo.scmPyroWaveHDR10 != 0     { hostProfiles.append("HDR10 4:2:0") }
         if m & ServerInfo.scmPyroWaveHDR10_444 != 0 { hostProfiles.append("HDR10 4:4:4") }
         let host = hostProfiles.isEmpty ? "none" : hostProfiles.joined(separator: ", ")
-        // D8: 4:4:4 only when asked for and offered, the same rule the launch applies. Until D9
-        // lands the stream is always 8-bit.
-        let use444 = i.userWants444 && m & ServerInfo.scmPyroWave444 != 0
-        var note = "Host offers: \(host). Will use: \(use444 ? "4:4:4" : "4:2:0") 8-bit."
-        if i.userWantsHDR { note += " HDR was requested but PyroWave HDR10 is not supported yet." }
-        if i.userWants444 && !use444 { note += " 4:4:4 was requested but the host does not offer it, so 4:2:0 is used." }
+        // The profile the launch will use: the same pure rule the launch applies (D8 and D9).
+        let profile = PyroWaveNegotiation.chooseProfile(userWants444: i.userWants444,
+                                                        userWantsHDR: i.userWantsHDR, hostSCM: m)
+        var note = "Host offers: \(host). Will use: \(profile.label)."
+        if profile.tenBit { note += " The host decides whether the 10-bit picture is HDR10 or SDR, from its display." }
+        if let reason = profile.fallbackReason { note += " " + reason.prefix(1).uppercased() + reason.dropFirst() + "." }
         return make("C14", .info, .pass, detail: note)
     }
 

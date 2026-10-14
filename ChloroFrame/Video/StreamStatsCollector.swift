@@ -110,6 +110,8 @@ final class StreamStatsCollector {
     // Received — set once when the first frame is successfully decoded
     private(set) var receivedCodec: VideoCodec? = nil
     private(set) var receivedHdr: Bool? = nil
+    /// PyroWave only: "4:2:0 10-bit" and so on, the profile the decoder was built for (D9).
+    var pyroWaveProfileLabel: String?
 
     func setReceivedCodec(_ codec: VideoCodec) {
         DispatchQueue.main.async { [weak self] in self?.receivedCodec = codec }

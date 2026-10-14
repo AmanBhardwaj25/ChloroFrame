@@ -88,6 +88,21 @@ final class ENetClient {
     private var controlSeq: UInt32 = 0
 
     var onDisconnect: (() -> Void)?
+    // The host's HDR mode message (0x010e): true when the stream is HDR10 PQ. The host sends it
+    // once, right after the control connection comes up and only again on a change, so the
+    // latest value is kept and replayed to a handler installed later. sendQueue only.
+    private var onHdrMode: ((Bool) -> Void)?
+    private var latestHdrMode: Bool?
+
+    /// Installs the HDR mode handler (called on the ENet queue) and replays the latest message
+    /// if one already arrived.
+    func setHdrModeHandler(_ handler: @escaping (Bool) -> Void) {
+        sendQueue.async { [weak self] in
+            guard let self else { return }
+            self.onHdrMode = handler
+            if let latest = self.latestHdrMode { handler(latest) }
+        }
+    }
 
     // All mutable send-path state (controlSeq, outSeq, NWConnection.send) is confined to
     // this queue. Callers on any thread (AppKit event callbacks, Swift concurrency tasks)
@@ -308,6 +323,16 @@ final class ENetClient {
                 guard o + 2 <= b.count else { return }
                 let len = Int(be16(b, o)); o += 2
                 guard o + len <= b.count else { return }
+                // The only host control message we act on is the HDR mode message (PyroWave
+                // colour, D9). Everything else is acknowledged and ignored as before.
+                if len >= 5,
+                   let enabled = HostHdrModeMessage.parse(payload: Array(b[o..<(o + len)]), key: rikey) {
+                    latestHdrMode = enabled
+                    #if DEBUG
+                    DebugFileLog.write("[ChloroFrame][enet] host HDR mode message enabled=\(enabled)")
+                    #endif
+                    onHdrMode?(enabled)
+                }
                 o += len
                 sendRaw(buildAck(channel: channel, seq: seq, remoteSentTime: remoteSentTime))
 

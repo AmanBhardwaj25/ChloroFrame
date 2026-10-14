@@ -67,6 +67,9 @@ nonisolated struct PyroWaveExperimentConfig: Codable, Equatable {
     /// Overrides the "4:4:4 chroma (PyroWave)" setting for the run (D8); the stored value comes
     /// back afterwards. nil: leave the setting alone.
     var chroma444: Bool?
+    /// Overrides the HDR setting for the run (D9): true asks for HDR10 PyroWave (10-bit, PQ when
+    /// the host display is HDR). The stored value comes back afterwards. nil: leave it alone.
+    var hdr: Bool?
     var phases: [Phase]
 
     init(hostName: String? = nil, appTitle: String? = nil, startupTimeoutSeconds: Double = 90,
@@ -94,6 +97,7 @@ nonisolated struct PyroWaveExperimentConfig: Codable, Equatable {
         udpProbeIgnoreVersionKeys = try c.decodeIfPresent(Bool.self, forKey: .udpProbeIgnoreVersionKeys) ?? false
         udpProbeFrameShaped = try c.decodeIfPresent(Bool.self, forKey: .udpProbeFrameShaped) ?? true
         chroma444 = try c.decodeIfPresent(Bool.self, forKey: .chroma444)
+        hdr = try c.decodeIfPresent(Bool.self, forKey: .hdr)
         phases = try c.decodeIfPresent([Phase].self, forKey: .phases) ?? []
     }
 
@@ -262,6 +266,7 @@ nonisolated enum PyroWaveExperimentReport {
         var start: PyroWaveExperimentSample
         var end: PyroWaveExperimentSample
         var failure: String?         // the phase did not produce a measurement
+        var profile: String?         // "4:2:0 10-bit, picture HDR (PQ)" (D9)
     }
 
     private static func median(_ a: [Double]) -> Double {
@@ -274,6 +279,7 @@ nonisolated enum PyroWaveExperimentReport {
         var out = "===== \(r.name): partial delivery \(r.partialDelivery ? "ON" : "OFF")"
         if r.lossPercent > 0 { out += ", injected loss \(r.lossPercent)% in bursts of \(r.burstLength)" }
         out += " =====\n"
+        if let profile = r.profile { out += "profile      \(profile)\n" }
         if let failure = r.failure {
             return out + "NOT MEASURED: \(failure)\n"
         }

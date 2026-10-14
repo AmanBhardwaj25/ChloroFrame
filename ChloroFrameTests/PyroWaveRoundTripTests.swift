@@ -134,11 +134,12 @@ final class PyroWaveRoundTripTests: XCTestCase {
         private var frame: PlanarVideoFrame?
         private var gpuMs = 0.0
 
-        init(device: MTLDevice, width: Int, height: Int, chroma444: Bool = false) throws {
+        init(device: MTLDevice, width: Int, height: Int, chroma444: Bool = false, bitDepth: Int = 8,
+             color: PlanarColorParams? = nil) throws {
             decoder = try PyroWaveDecoder(
                 device: device,
-                format: PyroWaveStreamFormat(width: width, height: height, chroma444: chroma444, bitDepth: 8),
-                storageMode: .shared)
+                format: PyroWaveStreamFormat(width: width, height: height, chroma444: chroma444, bitDepth: bitDepth),
+                storageMode: .shared, color: color)
             decoder.onGPUTime = { [weak self] ms in self?.lock.withLock { self?.gpuMs = ms } }
             decoder.onFrameDecoded = { [weak self] f, _ in
                 self?.lock.withLock { self?.frame = f }
@@ -162,6 +163,14 @@ final class PyroWaveRoundTripTests: XCTestCase {
         texture.getBytes(&bytes, bytesPerRow: texture.width,
                          from: MTLRegionMake2D(0, 0, texture.width, texture.height), mipmapLevel: 0)
         return bytes
+    }
+
+    /// Reads an R16 plane back as normalized floats (`code16 / 65535`).
+    private func readbackNormalized16(_ texture: MTLTexture) -> [Float] {
+        var raw = [UInt16](repeating: 0, count: texture.width * texture.height)
+        texture.getBytes(&raw, bytesPerRow: texture.width * 2,
+                         from: MTLRegionMake2D(0, 0, texture.width, texture.height), mipmapLevel: 0)
+        return raw.map { Float($0) / 65535 }
     }
 
     private func requireDevice() throws -> MTLDevice {
@@ -267,6 +276,64 @@ final class PyroWaveRoundTripTests: XCTestCase {
 
     func testRoundTrip1080p444() throws {
         try roundTrip(label: "1080p-444", width: 1920, height: 1080, mbpsAt60: 290, chroma444: true)
+    }
+
+    /// D9: a 10-bit stream decodes into R16 planes and carries the 10-bit color setup. The
+    /// vendored encoder only reads 8-bit planes and the bitstream carries no bit depth, so the
+    /// source here is 8-bit content; the decoded R16 samples must equal `source / 255`
+    /// (normalized as `code / (2^N - 1)`), not `source / 1023`.
+    func testRoundTripTenBitDecodesToNormalizedR16() throws {
+        for chroma444 in [false, true] {
+            let device = try requireDevice()
+            let shared = try PyroWaveDevice.shared(for: device)
+            let (w, h) = (1280, 720)
+            let image = makeImage(width: w, height: h, chroma444: chroma444)
+            let encoder = try PyroWaveEncoder(device: shared, width: w, height: h, chroma444: chroma444)
+            let packets = try encoder.encode(y: image.y, cb: image.cb, cr: image.cr,
+                                             maximumBitstreamSize: budget(mbpsAt60: 250))
+            let color = PlanarColorParams.forEncoderCscMode(4, bitDepth: 10, hdr: true)
+            let harness = try Harness(device: device, width: w, height: h, chroma444: chroma444,
+                                      bitDepth: 10, color: color)
+            let decoded = try XCTUnwrap(harness.decode(recordFrame(from: packets)))
+            let frame = decoded.frame
+
+            XCTAssertEqual(frame.y.pixelFormat, .r16Unorm)
+            XCTAssertEqual(frame.cb.pixelFormat, .r16Unorm)
+            XCTAssertEqual(frame.cr.pixelFormat, .r16Unorm)
+            XCTAssertEqual(frame.color.bitDepth, 10)
+            XCTAssertTrue(frame.color.isPQ)
+            XCTAssertEqual(frame.color.matrix, .bt2020)
+            XCTAssertEqual(frame.cb.width, chroma444 ? w : w / 2)
+
+            func meanAbsError(_ got: [Float], _ want: [UInt8]) -> Double {
+                var sum = 0.0
+                for i in 0..<want.count { sum += Double(abs(got[i] - Float(want[i]) / 255)) }
+                return sum / Double(want.count)
+            }
+            // Mean error under 1.5 codes of an 8-bit scale; /1023 scaling would be off by 4x.
+            XCTAssertLessThan(meanAbsError(readbackNormalized16(frame.y), image.y), 1.5 / 255, "luma, chroma444=\(chroma444)")
+            XCTAssertLessThan(meanAbsError(readbackNormalized16(frame.cb), image.cb), 3.0 / 255, "Cb, chroma444=\(chroma444)")
+            XCTAssertLessThan(meanAbsError(readbackNormalized16(frame.cr), image.cr), 3.0 / 255, "Cr, chroma444=\(chroma444)")
+
+            let counters = harness.decoder.counterSnapshot
+            XCTAssertEqual(counters.parseRejects + counters.pushRejects + counters.incomplete + counters.gpuFailures, 0)
+        }
+    }
+
+    /// D9: the host's HDR mode message flips the stamped color; frames already handed out keep theirs.
+    func testSetColorAffectsOnlyLaterFrames() throws {
+        let device = try requireDevice()
+        let pq = PlanarColorParams.forEncoderCscMode(4, bitDepth: 10, hdr: true)
+        let sdr = PlanarColorParams.forEncoderCscMode(4, bitDepth: 10, hdr: false)
+        let pool = PlanarFramePool(device: device, width: 64, height: 64, chroma444: false, bitDepth: 10,
+                                   maxFrames: 4, storageMode: .shared, color: pq)
+        let first = try XCTUnwrap(pool.acquire())
+        pool.color = sdr
+        let second = try XCTUnwrap(pool.acquire())
+        XCTAssertTrue(first.color.isPQ)
+        XCTAssertFalse(second.color.isPQ)
+        XCTAssertEqual(second.color.matrix, .bt2020, "10-bit SDR from encoderCscMode 4 is BT.2020")
+        XCTAssertFalse(second.color.fullRange)
     }
 
     private func nativeSize(pixels: Bool) -> (Int, Int) {

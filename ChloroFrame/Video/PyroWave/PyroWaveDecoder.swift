@@ -127,6 +127,7 @@ nonisolated final class PyroWaveDecoder: @unchecked Sendable {
     private var counters = Counters()
     private var loggedRejects = 0
     private var reportedFirstFrame = false
+    private var reportedPQ: Bool?
     // Stage timing (D7). Guarded by `lock`.
     private var window = PyroWaveStageTimes()
     private var lastSubmitTime: Double?
@@ -158,6 +159,13 @@ nonisolated final class PyroWaveDecoder: @unchecked Sendable {
             }
         }
     }
+
+    /// Changes the color setup stamped on frames decoded from now on (the host's HDR mode
+    /// message can turn PQ on or off after the stream started). Thread safe.
+    func setColor(_ color: PlanarColorParams) { pool.color = color }
+
+    /// The color setup new frames get.
+    var currentColor: PlanarColorParams { pool.color }
 
     /// Textures come from this pool; tests read them back.
     var framePool: PlanarFramePool { pool }
@@ -378,8 +386,14 @@ nonisolated final class PyroWaveDecoder: @unchecked Sendable {
             if first {
                 // The HUD's "received" rows describe the first successfully decoded frame.
                 stats?.setReceivedCodec(.pyrowave)
-                stats?.setReceivedHdr(planar.color.isPQ)
             }
+            // Also on a later PQ on/off flip from the host's HDR mode message (D9).
+            let isPQ = planar.color.isPQ
+            let pqChanged: Bool = lock.withLock {
+                defer { reportedPQ = isPQ }
+                return reportedPQ != isPQ
+            }
+            if pqChanged { stats?.setReceivedHdr(isPQ) }
             stats?.recordFrameDecoded(latencyMs: (CACurrentMediaTime() - submitTime) * 1000)
             onFrameDecoded?(planar, pts)
         }

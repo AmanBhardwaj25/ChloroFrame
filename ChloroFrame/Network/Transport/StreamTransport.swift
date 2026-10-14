@@ -238,22 +238,25 @@ final class StreamTransport {
         startSucceeded = true
     }
 
-    /// Creates the PyroWave decoder for the negotiated stream: 8-bit SDR until D9, 4:2:0 or 4:4:4 per the negotiated chroma,
-    /// with range and matrix taken from the `encoderCscMode` SDPBuilder announced (decision Q3).
+    /// Creates the PyroWave decoder for the negotiated stream: 4:2:0 or 4:4:4 per the negotiated
+    /// chroma, 8-bit or 10-bit per `dynamicRangeMode`, with range and matrix taken from the
+    /// `encoderCscMode` SDPBuilder announced (decision Q3). A 10-bit stream is assumed to be
+    /// HDR10 (BT.2020 PQ) until the host's HDR mode message says otherwise (D9).
     private func makePyroWaveDecoder() async throws -> PyroWaveDecoder {
         guard let device = metalDevice else {
             throw PyroWaveError.failed("no Metal device was passed to the transport", code: 0)
         }
         let format = PyroWaveStreamFormat(width: streamWidth, height: streamHeight,
-                                          chroma444: desc.chroma444, bitDepth: 8)
+                                          chroma444: desc.chroma444, bitDepth: desc.dynamicRangeMode != 0 ? 10 : 8)
         // D7 resolution sanity: 4:2:0 planes need even dimensions. HostConnectionView already
         // rounds overrides to even; this refuses a stream that slipped past it, in every build.
         if let problem = format.validationFailure {
             DebugFileLog.write("[ChloroFrame][pyrowave] refusing stream format: \(problem)")
             throw PyroWaveError.invalidFormat(problem)
         }
-        let cscMode = SDPBuilder.encoderCscMode(codec: .pyrowave, hdr: false)
-        let color = PlanarColorParams.forEncoderCscMode(cscMode, bitDepth: format.bitDepth, hdr: false)
+        let tenBit = format.bitDepth == 10
+        let cscMode = SDPBuilder.encoderCscMode(codec: .pyrowave, hdr: tenBit)
+        let color = PlanarColorParams.forEncoderCscMode(cscMode, bitDepth: format.bitDepth, hdr: tenBit)
         // Off the main actor: the first creation per MTLDevice compiles the decode shaders.
         let decoder = try await Task.detached(priority: .userInitiated) {
             try PyroWaveDecoder(device: device, format: format, color: color)
@@ -262,6 +265,21 @@ final class StreamTransport {
         decoder.onFrameDecoded = { [weak self] frame, pts in
             self?.onPlanarFrame?(frame, pts)
         }
+        // D9: the host says whether the 10-bit picture is PQ HDR or 10-bit SDR. An 8-bit stream
+        // has no HDR, so the message is ignored there.
+        if tenBit {
+            enet.setHdrModeHandler { [weak decoder] enabled in
+                guard let decoder else { return }
+                let updated = PlanarColorParams.forEncoderCscMode(cscMode, bitDepth: 10, hdr: enabled)
+                guard updated != decoder.currentColor else { return }
+                decoder.setColor(updated)
+                #if DEBUG
+                DebugFileLog.write("[ChloroFrame][pyrowave] host HDR mode message enabled=\(enabled) "
+                                 + "-> matrix=\(updated.matrix) transfer=\(updated.transfer)")
+                #endif
+            }
+        }
+        stats.pyroWaveProfileLabel = "\(format.chroma444 ? "4:4:4" : "4:2:0") \(format.bitDepth)-bit"
         stats.pyroWaveStatsProvider = { [weak decoder] in decoder?.counterSnapshot }
         stats.pyroWaveBitstreamMismatch = desc.pyroWaveBitstreamMismatch
         #if DEBUG

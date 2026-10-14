@@ -315,7 +315,30 @@ final class PyroWaveReadinessAuditTests: XCTestCase {
         XCTAssertEqual(r.outcome, .pass)
         XCTAssertTrue(r.detail!.contains("4:4:4 8-bit"))
         XCTAssertTrue(r.detail!.contains("HDR10 4:2:0"))
-        XCTAssertTrue(r.detail!.contains("HDR was requested"))
+        // The host offers HDR10 4:2:0 and HDR was asked for: the profile used is 10-bit.
+        XCTAssertTrue(r.detail!.contains("Will use: 4:2:0 10-bit."))
+        XCTAssertFalse(r.detail!.contains("not supported yet"))
+    }
+
+    func testC14ReportsTenBitProfilesAndFallbackToEightBit() {
+        var i = good()
+        i.hostCodecModeSupport = ServerInfo.scmPyroWave | ServerInfo.scmPyroWave444
+            | ServerInfo.scmPyroWaveHDR10 | ServerInfo.scmPyroWaveHDR10_444
+        i.userWantsHDR = true
+        i.userWants444 = true
+        XCTAssertTrue(row("C14", i).detail!.contains("Will use: 4:4:4 10-bit."))
+
+        // HDR asked for, host has only the 8-bit profiles: 8-bit SDR, and the report says why.
+        i.hostCodecModeSupport = ServerInfo.scmPyroWave | ServerInfo.scmPyroWave444
+        let r = row("C14", i)
+        XCTAssertEqual(r.outcome, .pass)
+        XCTAssertTrue(r.detail!.contains("Will use: 4:4:4 8-bit."))
+        XCTAssertTrue(r.detail!.contains("using 8-bit SDR"))
+
+        // HDR not asked for: never 10-bit even when offered.
+        i.userWantsHDR = false
+        i.hostCodecModeSupport = ServerInfo.scmPyroWave | ServerInfo.scmPyroWaveHDR10
+        XCTAssertTrue(row("C14", i).detail!.contains("Will use: 4:2:0 8-bit."))
     }
 
     func testC14ReportsTheProfileActuallyUsed() {
@@ -335,7 +358,7 @@ final class PyroWaveReadinessAuditTests: XCTestCase {
         r = row("C14", i)
         XCTAssertEqual(r.outcome, .pass)
         XCTAssertTrue(r.detail!.contains("Will use: 4:2:0 8-bit."))
-        XCTAssertTrue(r.detail!.contains("host does not offer it"))
+        XCTAssertTrue(r.detail!.contains("does not advertise SCM_PYROWAVE_444"))
     }
 
     func testC15DecodeSpeedBands() {

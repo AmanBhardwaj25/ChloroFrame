@@ -279,12 +279,27 @@ final class PyroWaveReceivePathTests: XCTestCase {
     func testBenchmarkRefusesWhatItCannotMeasure() async throws {
         try XCTSkipUnless(VideoCapabilities.supportsPyroWave, "PyroWave needs an Apple7+ GPU")
         let device = try XCTUnwrap(MTLCreateSystemDefaultDevice())
-        let tenBit = PyroWaveStreamFormat(width: 1920, height: 1080, chroma444: false, bitDepth: 10)
+        let twelveBit = PyroWaveStreamFormat(width: 1920, height: 1080, chroma444: false, bitDepth: 12)
         do {
-            _ = try await PyroWaveDecodeBenchmark.run(device: device, format: tenBit)
-            XCTFail("10-bit must be refused until D9")
+            _ = try await PyroWaveDecodeBenchmark.run(device: device, format: twelveBit)
+            XCTFail("12-bit must be refused")
         } catch {
-            XCTAssertEqual(error as? PyroWaveDecodeBenchmark.Failure, .unsupportedFormat("bit depth 10"))
+            XCTAssertEqual(error as? PyroWaveDecodeBenchmark.Failure, .unsupportedFormat("bit depth 12"))
+        }
+    }
+
+    /// D9: C15 follows the chosen profile, so 10-bit (R16 output planes) must be measurable.
+    func testDecodeBenchmarkMeasuresTenBit() async throws {
+        try XCTSkipUnless(VideoCapabilities.supportsPyroWave, "PyroWave needs an Apple7+ GPU")
+        let device = try XCTUnwrap(MTLCreateSystemDefaultDevice())
+        _ = try PyroWaveDevice.shared(for: device)
+        for chroma444 in [false, true] {
+            let format = PyroWaveStreamFormat(width: 1920, height: 1080, chroma444: chroma444, bitDepth: 10)
+            let m = try await PyroWaveDecodeBenchmark.measure(device: device, format: format)
+            DebugFileLog.write("D9 benchmark 1080p 10-bit chroma444=\(chroma444) avg \(String(format: "%.2f", m.averageGPUMs)) ms, "
+                  + "max \(String(format: "%.2f", m.maxGPUMs)) ms")
+            XCTAssertGreaterThan(m.averageGPUMs, 0)
+            XCTAssertLessThan(m.averageGPUMs, 2.0, "C15 pass band, 10-bit")
         }
     }
 

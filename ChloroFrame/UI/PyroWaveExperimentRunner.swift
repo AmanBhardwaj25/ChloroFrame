@@ -90,7 +90,13 @@ final class PyroWaveExperimentRunner {
         config = cfg
         let storedChroma444 = UserDefaults.standard.object(forKey: "pyroWave444")
         if let want = cfg.chroma444 { UserDefaults.standard.set(want, forKey: "pyroWave444") }
+        let storedHDR = UserDefaults.standard.object(forKey: "enableHDR")
+        if let want = cfg.hdr { UserDefaults.standard.set(want, forKey: "enableHDR") }
         defer {
+            if cfg.hdr != nil {
+                if let storedHDR { UserDefaults.standard.set(storedHDR, forKey: "enableHDR") }
+                else { UserDefaults.standard.removeObject(forKey: "enableHDR") }
+            }
             isRunning = false
             config = nil
             if cfg.chroma444 != nil {
@@ -157,11 +163,14 @@ final class PyroWaveExperimentRunner {
         let info = try? await client.fetchServerInfo()
         let display = DisplayConfig.detect()
         let override = UserDefaults.standard.integer(forKey: "streamOverrideBitrate")
-        let use444 = UserDefaults.standard.bool(forKey: "pyroWave444")
-            && (info?.supportsPyroWave444 ?? false)
+        let profile = PyroWaveNegotiation.chooseProfile(
+            userWants444: UserDefaults.standard.bool(forKey: "pyroWave444"),
+            userWantsHDR: UserDefaults.standard.bool(forKey: "enableHDR") && display.hdr,
+            hostSCM: info?.codecModeSupport ?? 0)
         let kbps = cfg.udpProbeKbps
             ?? (override > 0 ? override
-                : PyroWaveBitrate.defaultKbps(width: display.width, height: display.height, fps: display.fps, yuv444: use444))
+                : PyroWaveBitrate.defaultKbps(width: display.width, height: display.height, fps: display.fps,
+                                                      hdr10: profile.tenBit, yuv444: profile.chroma444))
         var text = "UDP network test (D7b), \(cfg.udpProbeRepeats) run(s) at \(kbps / 1000) Mbps\n"
         for n in 1...cfg.udpProbeRepeats {
             let result = await PyroWaveNetworkTest.run(client: client, display: display, requestedKbps: kbps,
@@ -234,6 +243,8 @@ final class PyroWaveExperimentRunner {
             result.fps.append(stats.current.measFps)
         }
         result.seconds = Date().timeIntervalSince(t0)
+        let picture = stats.receivedHdr.map { $0 ? "HDR (PQ)" : "SDR" } ?? "unknown"
+        result.profile = "\(stats.pyroWaveProfileLabel ?? "?"), picture \(picture)"
         result.end = sample(stats: stats, udp: Self.udpStats())
         result.start.injectedDrops = 0
         result.end.injectedDrops = PyroWaveExperimentControl.injected - injectedBase

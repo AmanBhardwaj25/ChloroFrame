@@ -99,9 +99,9 @@ struct SettingsView: View {
                 // Toggle("Low Latency Mode", isOn: $lowLatencyMode)
                 //     .help("Minimize buffering for responsive input")
 
-                Toggle("HDR (requires HEVC or AV1 + host HDR on)", isOn: $enableHDR)
-                    .help("Request HDR10 (BT.2020 PQ) encoding. Enable only when the host system has HDR active — requires the HEVC or AV1 codec (AV1 needs host AV1 Main10 support). Takes effect on the next connect.")
-                    .disabled(preferredCodec != "h265" && preferredCodec != "av1")
+                Toggle("HDR (requires HEVC, AV1 or PyroWave + host HDR on)", isOn: $enableHDR)
+                    .help("Request HDR10 (BT.2020 PQ) encoding. Enable only when the host system has HDR active. Requires the HEVC, AV1 or PyroWave codec (AV1 needs host AV1 Main10 support; PyroWave needs a host that offers its 10-bit profile, otherwise the stream stays 8-bit SDR). Takes effect on the next connect.")
+                    .disabled(preferredCodec != "h265" && preferredCodec != "av1" && preferredCodec != "pyrowave")
             }
 
             section("Audio") {

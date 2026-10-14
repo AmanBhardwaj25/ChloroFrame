@@ -78,10 +78,11 @@ enum PyroWaveAuditRunner {
         // C15 runs alongside the route lookup and the HTTPS request so it adds no wall time of
         // its own beyond whatever it exceeds them by. Cached per stream format for the session.
         // The profile the stream will actually use: 4:4:4 only when asked for and offered.
-        let use444 = PyroWaveNegotiation.chooseChroma(
-            userWants444: userWants444,
-            hostSupports444: serverInfo.supportsPyroWave444).use444
-        async let benchmark = decodeBenchmark(width: display.width, height: display.height, chroma444: use444)
+        let profile = PyroWaveNegotiation.chooseProfile(
+            userWants444: userWants444, userWantsHDR: userWantsHDR, hostSCM: serverInfo.codecModeSupport)
+        let use444 = profile.chroma444
+        async let benchmark = decodeBenchmark(width: display.width, height: display.height,
+                                              chroma444: use444, bitDepth: profile.tenBit ? 10 : 8)
 
         // Route and this Mac's link, off the main actor (getaddrinfo and CoreWLAN can block).
         let (route, macLink) = await Task.detached(priority: .userInitiated) { () -> (RouteInfo?, PyroWaveMacLink?) in
@@ -117,7 +118,8 @@ enum PyroWaveAuditRunner {
         inputs.networkClass = networkClass
         inputs.macLink = macLink
         inputs.requestedKbps = requestedKbps
-        inputs.guideKbps = PyroWaveBitrate.defaultKbps(width: display.width, height: display.height, fps: display.fps, yuv444: use444)
+        inputs.guideKbps = PyroWaveBitrate.defaultKbps(width: display.width, height: display.height, fps: display.fps,
+                                                      hdr10: profile.tenBit, yuv444: use444)
         if let route, let networkClass {
             inputs.packetSize = PacketSizePolicy.choose(class: networkClass, family: route.family,
                                                         interfaceMTU: route.interfaceMTU)
@@ -154,14 +156,14 @@ enum PyroWaveAuditRunner {
         return report
     }
 
-    /// C15 input: average GPU decode ms at this stream size (8-bit until D9), from
+    /// C15 input: average GPU decode ms at this stream size and profile, from
     /// the session cache or a fresh benchmark. nil when it could not be measured, which the
     /// audit reports as an unknown, never as a slow GPU.
-    nonisolated private static func decodeBenchmark(width: Int, height: Int, chroma444: Bool) async -> (ms: Double?, note: String) {
+    nonisolated private static func decodeBenchmark(width: Int, height: Int, chroma444: Bool, bitDepth: Int) async -> (ms: Double?, note: String) {
         guard VideoCapabilities.supportsPyroWave, let device = MTLCreateSystemDefaultDevice() else {
             return (nil, "skipped (no supported GPU)")
         }
-        let format = PyroWaveStreamFormat(width: width, height: height, chroma444: chroma444, bitDepth: 8)
+        let format = PyroWaveStreamFormat(width: width, height: height, chroma444: chroma444, bitDepth: bitDepth)
         if let cached = PyroWaveBenchmarkCache.averageGPUMs(for: format) {
             return (cached, String(format: "%.2fms cached", cached))
         }

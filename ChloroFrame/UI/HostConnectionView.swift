@@ -468,8 +468,9 @@ struct HostConnectionView: View {
         let display = buildDisplayConfig(base: DisplayConfig.detect())
         let report = await PyroWaveAuditRunner.run(
             client: client, serverInfo: serverInfo, display: display,
-            requestedKbps: pyroWaveRequestedKbps(display: display, serverInfo: serverInfo),
-            userWantsHDR: enableHDR, userWants444: pyroWave444, reason: "launch"
+            requestedKbps: pyroWaveRequestedKbps(display: display, serverInfo: serverInfo, app: app),
+            userWantsHDR: enableHDR && display.hdr && app.isHDRSupported,
+            userWants444: pyroWave444, reason: "launch"
         )
         if report.blocked {
             pyroWaveFallbackReport = report
@@ -489,18 +490,22 @@ struct HostConnectionView: View {
 
     // The total bitrate a PyroWave launch will request: the user's override, else the PyroWave
     // default. Mirrors the codec == .pyrowave branch of performLaunch.
-    private func pyroWaveRequestedKbps(display: DisplayConfig, serverInfo: ServerInfo) -> Int {
-        overrideBitrate > 0
+    private func pyroWaveRequestedKbps(display: DisplayConfig, serverInfo: ServerInfo, app: SunshineApp? = nil) -> Int {
+        let profile = pyroWaveProfile(display: display, serverInfo: serverInfo, app: app)
+        return overrideBitrate > 0
             ? overrideBitrate
             : PyroWaveBitrate.defaultKbps(width: display.width, height: display.height, fps: display.fps,
-                                          yuv444: pyroWaveUses444(serverInfo: serverInfo))
+                                          hdr10: profile.tenBit, yuv444: profile.chroma444)
     }
 
-    // The chroma profile this launch will use: 4:4:4 only when the toggle is on and the host
-    // advertises it (D8).
-    private func pyroWaveUses444(serverInfo: ServerInfo) -> Bool {
-        PyroWaveNegotiation.chooseChroma(userWants444: pyroWave444,
-                                         hostSupports444: serverInfo.supportsPyroWave444).use444
+    // The profile this launch will use (D8 and D9): 4:4:4 and 10-bit only when asked for and
+    // offered by the host. HDR counts as asked for when the setting is on, the display can show
+    // it and (when known) the app supports it, the same `wantHdr` performLaunch computes.
+    private func pyroWaveProfile(display: DisplayConfig, serverInfo: ServerInfo, app: SunshineApp?) -> PyroWaveNegotiation.Profile {
+        PyroWaveNegotiation.chooseProfile(
+            userWants444: pyroWave444,
+            userWantsHDR: enableHDR && display.hdr && (app?.isHDRSupported ?? true),
+            hostSCM: serverInfo.codecModeSupport)
     }
 
     private func checkPyroWaveReadiness(serverInfo: ServerInfo) async {
@@ -510,7 +515,7 @@ struct HostConnectionView: View {
         pyroWaveCheckReport = await PyroWaveAuditRunner.run(
             client: client, serverInfo: serverInfo, display: display,
             requestedKbps: pyroWaveRequestedKbps(display: display, serverInfo: serverInfo),
-            userWantsHDR: enableHDR, userWants444: pyroWave444, forceRefresh: true, reason: "button"
+            userWantsHDR: enableHDR && display.hdr, userWants444: pyroWave444, forceRefresh: true, reason: "button"
         )
     }
 
@@ -554,9 +559,12 @@ struct HostConnectionView: View {
             codec = .av1
         default:     codec = .hevc
         }
-        // PyroWave is 8-bit 4:2:0 SDR only until D9 (HDR needs the 0x010e HDR-mode message), so
-        // HDR stays off for it here, which also keeps /launch hdrMode and RTSP in agreement.
-        let enableHdr = wantHdr && (codec == .hevc || codec == .av1)
+        // PyroWave (D9): HDR10 only when the host advertises a 10-bit profile; otherwise the
+        // stream is 8-bit SDR and HDR is off here, which keeps /launch hdrMode and RTSP in
+        // agreement. The host's 0x010e message later says whether the 10-bit picture is PQ.
+        let pwProfile = PyroWaveNegotiation.chooseProfile(
+            userWants444: pyroWave444, userWantsHDR: wantHdr, hostSCM: serverInfo.codecModeSupport)
+        let enableHdr = codec == .pyrowave ? (wantHdr && pwProfile.tenBit) : (wantHdr && (codec == .hevc || codec == .av1))
         #if DEBUG
         DebugFileLog.write("[ChloroFrame][launch] preferredCodec=\(preferredCodec) supportsPyroWave=\(VideoCapabilities.supportsPyroWave) "
                   + "scm=0x\(String(serverInfo.codecModeSupport, radix: 16)) hostPyroWave420=\(serverInfo.supportsPyroWave420) "
@@ -568,13 +576,13 @@ struct HostConnectionView: View {
         var streamDisplay = display
         var fallbackBitrate: Int? = nil
         // D8: 4:4:4 only for a PyroWave stream, only when the host advertises it.
-        let chroma = PyroWaveNegotiation.chooseChroma(userWants444: pyroWave444,
-                                                      hostSupports444: serverInfo.supportsPyroWave444)
-        let use444 = codec == .pyrowave && chroma.use444
+        let use444 = codec == .pyrowave && pwProfile.chroma444
         #if DEBUG
         if codec == .pyrowave {
-            DebugFileLog.write("[ChloroFrame][launch] pyrowave userWants444=\(pyroWave444) hostOffers444=\(serverInfo.supportsPyroWave444) chroma=\(use444 ? "4:4:4" : "4:2:0")"
-                             + (chroma.fallbackReason.map { " (\($0))" } ?? ""))
+            DebugFileLog.write("[ChloroFrame][launch] pyrowave userWants444=\(pyroWave444) userWantsHDR=\(wantHdr) "
+                             + "hostOffers444=\(serverInfo.supportsPyroWave444) hostOffersHDR10=\(serverInfo.supportsPyroWaveHDR10) "
+                             + "hostOffersHDR10_444=\(serverInfo.supportsPyroWaveHDR10_444) profile=\(pwProfile.label)"
+                             + (pwProfile.fallbackReason.map { " (fallback: \($0))" } ?? ""))
         }
         #endif
         if codec == .pyrowave {
@@ -588,7 +596,8 @@ struct HostConnectionView: View {
                 streamDisplay = DisplayConfig(
                     width: display.width, height: display.height, fps: display.fps, hdr: display.hdr,
                     bitrateOverride: PyroWaveBitrate.defaultKbps(
-                        width: display.width, height: display.height, fps: display.fps, yuv444: use444
+                        width: display.width, height: display.height, fps: display.fps,
+                        hdr10: enableHdr, yuv444: use444
                     )
                 )
             }

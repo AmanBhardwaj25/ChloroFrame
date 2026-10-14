@@ -41,8 +41,13 @@ nonisolated final class PlanarFramePool: @unchecked Sendable {
     let bitDepth: Int
     let maxFrames: Int
 
-    /// Stamped on every frame handed out; set from what the session negotiated.
-    let color: PlanarColorParams
+    /// Stamped on every frame handed out; set from what the session negotiated and updated by
+    /// the host's HDR mode message (D9). Frames already handed out keep the value they got.
+    var color: PlanarColorParams {
+        get { lock.withLock { currentColor } }
+        set { lock.withLock { currentColor = newValue } }
+    }
+    private var currentColor: PlanarColorParams
 
     private let storageMode: MTLStorageMode
     private let lock = NSLock()
@@ -61,8 +66,8 @@ nonisolated final class PlanarFramePool: @unchecked Sendable {
         self.bitDepth = bitDepth
         self.maxFrames = maxFrames
         self.storageMode = storageMode
-        self.color = color ?? PlanarColorParams(bitDepth: bitDepth, fullRange: false,
-                                                matrix: .bt709, transfer: .sdr)
+        self.currentColor = color ?? PlanarColorParams(bitDepth: bitDepth, fullRange: false,
+                                                       matrix: .bt709, transfer: .sdr)
     }
 
     /// Frames currently handed out and not yet released.
@@ -72,10 +77,12 @@ nonisolated final class PlanarFramePool: @unchecked Sendable {
     func acquire() -> PlanarVideoFrame? {
         // Reserve a slot under the lock; textures are allocated outside it.
         var reserved = false
+        var stamp = PlanarColorParams(bitDepth: bitDepth, fullRange: false)
         let reused: (y: MTLTexture, cb: MTLTexture, cr: MTLTexture)? = lock.withLock {
             guard inUse < maxFrames else { return nil }
             inUse += 1
             reserved = true
+            stamp = currentColor
             return free.popLast()
         }
         guard reserved else { return nil }
@@ -90,7 +97,7 @@ nonisolated final class PlanarFramePool: @unchecked Sendable {
             return nil
         }
         return PlanarVideoFrame(y: planes.y, cb: planes.cb, cr: planes.cr,
-                                color: color, pool: self)
+                                color: stamp, pool: self)
     }
 
     fileprivate func recycle(y: MTLTexture, cb: MTLTexture, cr: MTLTexture) {

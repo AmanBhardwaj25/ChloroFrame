@@ -7,6 +7,7 @@
 //
 
 import XCTest
+import CryptoKit
 @testable import ChloroFrame
 
 final class PyroWaveNegotiationTests: XCTestCase {
@@ -148,6 +149,106 @@ final class PyroWaveNegotiationTests: XCTestCase {
         let base = PyroWaveBitrate.defaultKbps(width: 3024, height: 1890, fps: 60)
         let wide = PyroWaveBitrate.defaultKbps(width: 3024, height: 1890, fps: 60, yuv444: true)
         XCTAssertEqual(Double(wide), Double(base) * 1.15, accuracy: 1)
+    }
+
+    func testPyroWaveHDR10BitrateDefaultIsOnePointTwoTimesLarger() {
+        let base = PyroWaveBitrate.defaultKbps(width: 3024, height: 1890, fps: 60)
+        let hdr = PyroWaveBitrate.defaultKbps(width: 3024, height: 1890, fps: 60, hdr10: true)
+        XCTAssertEqual(Double(hdr), Double(base) * 1.2, accuracy: 1)
+        let both = PyroWaveBitrate.defaultKbps(width: 3024, height: 1890, fps: 60, hdr10: true, yuv444: true)
+        XCTAssertEqual(Double(both), Double(base) * 1.2 * 1.15, accuracy: 1)
+    }
+
+    // MARK: - Profile choice (D8 and D9)
+
+    private let m8 = ServerInfo.scmPyroWave
+    private let m444 = ServerInfo.scmPyroWave444
+    private let mHDR = ServerInfo.scmPyroWaveHDR10
+    private let mHDR444 = ServerInfo.scmPyroWaveHDR10_444
+
+    func testProfileIsEightBit420WhenNothingIsAsked() {
+        let p = PyroWaveNegotiation.chooseProfile(userWants444: false, userWantsHDR: false,
+                                                  hostSCM: m8 | m444 | mHDR | mHDR444)
+        XCTAssertEqual(p, .init(chroma444: false, tenBit: false, fallbackReason: nil))
+        XCTAssertEqual(p.label, "4:2:0 8-bit")
+    }
+
+    func testProfileHDR420() {
+        let p = PyroWaveNegotiation.chooseProfile(userWants444: false, userWantsHDR: true, hostSCM: m8 | mHDR)
+        XCTAssertEqual(p, .init(chroma444: false, tenBit: true, fallbackReason: nil))
+    }
+
+    func testProfileHDR444() {
+        let p = PyroWaveNegotiation.chooseProfile(userWants444: true, userWantsHDR: true,
+                                                  hostSCM: m8 | m444 | mHDR | mHDR444)
+        XCTAssertEqual(p, .init(chroma444: true, tenBit: true, fallbackReason: nil))
+        XCTAssertEqual(p.label, "4:4:4 10-bit")
+    }
+
+    func testProfileHDRKeepsHDRWhenHostLacksHDR444() {
+        let p = PyroWaveNegotiation.chooseProfile(userWants444: true, userWantsHDR: true,
+                                                  hostSCM: m8 | m444 | mHDR)
+        XCTAssertTrue(p.tenBit)
+        XCTAssertFalse(p.chroma444)
+        XCTAssertNotNil(p.fallbackReason)
+    }
+
+    func testProfileFallsBackToEightBitSDRWhenHostHasNoTenBit() {
+        let p = PyroWaveNegotiation.chooseProfile(userWants444: true, userWantsHDR: true, hostSCM: m8 | m444)
+        XCTAssertFalse(p.tenBit)
+        XCTAssertTrue(p.chroma444, "the 4:4:4 request is still honored at 8-bit")
+        XCTAssertTrue(p.fallbackReason?.contains("8-bit SDR") ?? false)
+
+        let q = PyroWaveNegotiation.chooseProfile(userWants444: false, userWantsHDR: true, hostSCM: m8)
+        XCTAssertEqual(q.label, "4:2:0 8-bit")
+        XCTAssertNotNil(q.fallbackReason)
+    }
+
+    func testProfileNeverGoesTenBitUnasked() {
+        let p = PyroWaveNegotiation.chooseProfile(userWants444: true, userWantsHDR: false,
+                                                  hostSCM: m8 | m444 | mHDR | mHDR444)
+        XCTAssertEqual(p, .init(chroma444: true, tenBit: false, fallbackReason: nil))
+    }
+
+    func testProfileMatchesChooseChromaForEightBit() {
+        for want in [false, true] {
+            for has in [false, true] {
+                let scm = m8 | (has ? m444 : 0)
+                let p = PyroWaveNegotiation.chooseProfile(userWants444: want, userWantsHDR: false, hostSCM: scm)
+                let c = PyroWaveNegotiation.chooseChroma(userWants444: want, hostSupports444: has)
+                XCTAssertEqual(p.chroma444, c.use444)
+                XCTAssertEqual(p.fallbackReason, c.fallbackReason)
+            }
+        }
+    }
+
+    // MARK: - Host HDR mode message (0x010e)
+
+    func testHdrModeMessageRoundTripsEncrypted() {
+        let key = SymmetricKey(data: Data((0..<16).map { UInt8($0) }))
+        for enabled in [true, false] {
+            let wire = HostHdrModeMessage.encryptedPayload(enabled: enabled, seq: 0x0102_0304, key: key)
+            XCTAssertFalse(wire.isEmpty)
+            XCTAssertEqual(HostHdrModeMessage.parse(payload: wire, key: key), enabled)
+        }
+    }
+
+    func testHdrModeMessageRejectsWrongKeyTamperingAndTruncation() {
+        let key = SymmetricKey(data: Data((0..<16).map { UInt8($0) }))
+        let other = SymmetricKey(data: Data((0..<16).map { UInt8($0 + 1) }))
+        var wire = HostHdrModeMessage.encryptedPayload(enabled: true, seq: 7, key: key)
+        XCTAssertNil(HostHdrModeMessage.parse(payload: wire, key: other))
+        XCTAssertNil(HostHdrModeMessage.parse(payload: Array(wire.prefix(10)), key: key))
+        XCTAssertNil(HostHdrModeMessage.parse(payload: [], key: key))
+        wire[wire.count - 1] ^= 0xFF
+        XCTAssertNil(HostHdrModeMessage.parse(payload: wire, key: key))
+    }
+
+    func testHdrModeMessagePlaintextAndOtherTypes() {
+        XCTAssertEqual(HostHdrModeMessage.parse(payload: [0x0e, 0x01, 0x1d, 0x00, 0x01, 0, 0], key: nil), true)
+        XCTAssertEqual(HostHdrModeMessage.parse(payload: [0x0e, 0x01, 0x1d, 0x00, 0x00, 0, 0], key: nil), false)
+        // A different control type (here 0x0100, termination) is not an HDR message.
+        XCTAssertNil(HostHdrModeMessage.parse(payload: [0x00, 0x01, 0x04, 0x00, 0x01, 0, 0], key: nil))
     }
 
     func testDefaultBitrateMatchesTheAuthorsGuide() {

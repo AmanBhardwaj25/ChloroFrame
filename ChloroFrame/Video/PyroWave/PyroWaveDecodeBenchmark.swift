@@ -69,8 +69,13 @@ nonisolated enum PyroWaveDecodeBenchmark {
     // MARK: - Synchronous core
 
     static func measureSync(device: MTLDevice, format: PyroWaveStreamFormat) throws -> Measurement {
-        // The vendored encoder wrapper takes 8-bit planes only; 10-bit arrives with D9.
-        guard format.bitDepth == 8 else { throw Failure.unsupportedFormat("bit depth \(format.bitDepth)") }
+        // The vendored encoder only reads 8-bit planes, and the bitstream does not carry a bit
+        // depth, so a 10-bit format is measured by encoding the same 8-bit image and decoding it
+        // into R16 planes with the 10-bit pool. The decode work is the same; only the output
+        // texture format (and the bandwidth to write it) differs, which is what C15 needs.
+        guard format.bitDepth == 8 || format.bitDepth == 10 else {
+            throw Failure.unsupportedFormat("bit depth \(format.bitDepth)")
+        }
         guard format.width >= 64, format.height >= 64 else {
             throw Failure.unsupportedFormat("size \(format.width)x\(format.height)")
         }
@@ -82,7 +87,7 @@ nonisolated enum PyroWaveDecodeBenchmark {
         let image = syntheticImage(width: format.width, height: format.height, chroma444: format.chroma444)
         // Budget for one frame at the default bitrate for this size at 60 fps.
         let kbps = PyroWaveBitrate.defaultKbps(width: format.width, height: format.height, fps: 60,
-                                               yuv444: format.chroma444)
+                                               hdr10: format.bitDepth == 10, yuv444: format.chroma444)
         let budget = kbps * 1000 / 8 / 60
         let packets = try encoder.encode(y: image.y, cb: image.cb, cr: image.cr, maximumBitstreamSize: budget)
         var frame = Data()

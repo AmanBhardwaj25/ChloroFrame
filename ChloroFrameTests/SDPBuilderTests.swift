@@ -140,6 +140,22 @@ final class SDPBuilderTests: XCTestCase {
         XCTAssertEqual(attribute("x-ss-video[0].chromaSamplingType", in: sdp), "1")
     }
 
+    /// D9: 10-bit PyroWave is requested with the stock HDR attributes and BT.2020 limited.
+    func testPyroWaveHDR10SetsDynamicRangeAndBT2020() {
+        for yuv444 in [false, true] {
+            let sdp = SDPBuilder.buildAnnounceSDP(
+                serverHost: "192.168.1.50", videoLocalPort: 47998,
+                config: pyroWaveConfig(yuv444: yuv444, hdr: true),
+                networkClass: .local, videoPacketSize: 1392
+            )
+            XCTAssertEqual(attribute("x-nv-vqos[0].bitStreamFormat", in: sdp), "3")
+            XCTAssertEqual(attribute("x-nv-video[0].dynamicRangeMode", in: sdp), "1")
+            XCTAssertEqual(attribute("x-nv-video[0].encoderCscMode", in: sdp), "4")
+            XCTAssertEqual(attribute("x-ss-video[0].chromaSamplingType", in: sdp), yuv444 ? "1" : "0")
+            XCTAssertEqual(attribute("x-ss-video[0].pyrowaveFeatures", in: sdp), "1")
+        }
+    }
+
     func testYuv444IsIgnoredForOtherCodecs() {
         for codec in [VideoCodec.h264, .hevc, .av1] {
             var c = StreamConfig()
