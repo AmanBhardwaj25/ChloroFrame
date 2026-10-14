@@ -6,6 +6,7 @@
 //
 
 import SwiftUI
+import Metal
 
 // MARK: - Connection flow state machine
 // StreamError lives in StreamState.swift so ContentView can reference it too.
@@ -575,6 +576,12 @@ struct HostConnectionView: View {
             "negotiate", "display"
         )
 
+        // PyroWave: start compiling the decode shaders now, in parallel with RTSP, so the decoder
+        // the transport builds before Start A/B is a cache hit.
+        if codec == .pyrowave, let device = MTLCreateSystemDefaultDevice() {
+            PyroWaveDevice.warmUp(device: device)
+        }
+
         let rtsp = RTSPClient()
         do {
             let stream = try await rtsp.negotiate(sessionURL: sessionURL, config: config)
@@ -591,6 +598,9 @@ struct HostConnectionView: View {
             r.stats = t.stats
             r.setStreamFps(config.fps)
             t.onVideoTexture = { pixelBuffer, pts in r.enqueueFrame(pixelBuffer, pts: pts) }
+            // PyroWave decodes into planar textures on the renderer's own device.
+            t.metalDevice = r.device
+            t.onPlanarFrame = { frame, pts in r.enqueueFrame(.planar(frame), pts: pts) }
             t.onClockReset = { r.resetClockAnchor() }
             t.onENetDisconnect = {
                 Task { @MainActor in

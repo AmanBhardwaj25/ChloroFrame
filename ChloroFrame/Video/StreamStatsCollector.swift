@@ -70,6 +70,10 @@ struct StreamStats {
     var audioReorder: Int = 0         // backwards-seq packets we discarded (reorder/dup)
     var audioLatencyClampMs: Double = 0 // cumulative ms skipped by the max-latency clamp (bursts)
     var audioTargetMs: Double = 0     // current adaptive jitter-buffer target latency
+
+    // PyroWave decoder counters. nil for every other codec, which is how the HUD knows to
+    // hide them.
+    var pyroWave: PyroWaveDecoder.Counters? = nil
 }
 
 // MARK: - Collector
@@ -115,6 +119,10 @@ final class StreamStatsCollector {
 
     // Pulls the audio receiver's loss/reorder counters on each tick. Set by StreamTransport.
     var audioReceiverStatsProvider: (() -> (loss: Int, reorder: Int)?)?
+
+    // PyroWave decoder counters, pulled on each tick. Set by StreamTransport only for PyroWave
+    // sessions; nil otherwise, so no other codec's stats or logs change.
+    var pyroWaveStatsProvider: (() -> PyroWaveDecoder.Counters?)?
 
     // ── Lock-protected accumulator ────────────────────────────────────────
 
@@ -358,7 +366,15 @@ final class StreamStatsCollector {
             audio?.bufferedMs ?? 0, audio?.targetMs ?? 0, audio?.underrunCount ?? 0, audio?.overrunCount ?? 0,
             audio?.driftDrops ?? 0, audio?.driftInserts ?? 0, audio?.latencyClampMs ?? 0,
             audio?.decodeCount ?? 0, audioRx?.loss ?? 0, audioRx?.reorder ?? 0)
-        SessionLog.shared.line(vLine + "  ||  " + aLine)
+        let pw = pyroWaveStatsProvider?()
+        var pwLine = ""
+        if let pw {
+            pwLine = String(format:
+                "  ||  PYROWAVE sub=%ld dec=%ld parseRej=%ld pushRej=%ld incomplete=%ld pool=%ld replaced=%ld gpuFail=%ld gpu=%.2f/%.2fms",
+                pw.submitted, pw.decoded, pw.parseRejects, pw.pushRejects, pw.incomplete,
+                pw.poolExhausted, pw.mailboxReplaced, pw.gpuFailures, pw.decodeAvgMs, pw.gpuMsMax)
+        }
+        SessionLog.shared.line(vLine + "  ||  " + aLine + pwLine)
 
         current = StreamStats(
             reqWidth: requestedWidth,
@@ -404,7 +420,8 @@ final class StreamStatsCollector {
             audioLoss:         audioRx?.loss ?? 0,
             audioReorder:      audioRx?.reorder ?? 0,
             audioLatencyClampMs: audio?.latencyClampMs ?? 0,
-            audioTargetMs:     audio?.targetMs ?? 0
+            audioTargetMs:     audio?.targetMs ?? 0,
+            pyroWave:          pw
         )
     }
 }

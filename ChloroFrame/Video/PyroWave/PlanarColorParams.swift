@@ -59,6 +59,23 @@ nonisolated struct PlanarColorParams: Equatable {
 
     var isPQ: Bool { transfer == .pq }
 
+    /// The color setup that follows from the `encoderCscMode` the client announced, using the
+    /// host's own reading of it (vibeshine `video_colorspace.cpp`): bit 0 is full range, and
+    /// `mode >> 1` selects BT.601, BT.709 or BT.2020. An HDR stream is BT.2020 with PQ whatever
+    /// the matrix bits say. Modes outside 0...5 fall back to BT.709 like the host does.
+    static func forEncoderCscMode(_ mode: Int, bitDepth: Int, hdr: Bool) -> PlanarColorParams {
+        let matrix: PlanarMatrix
+        switch mode >> 1 {
+        case 0:  matrix = .bt601
+        case 2:  matrix = .bt2020
+        default: matrix = .bt709
+        }
+        return PlanarColorParams(bitDepth: bitDepth,
+                                 fullRange: mode & 1 != 0,
+                                 matrix: hdr ? .bt2020 : matrix,
+                                 transfer: hdr ? .pq : .sdr)
+    }
+
     // MARK: Range
 
     /// Normalized value of the largest code, `2^N - 1`.

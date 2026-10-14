@@ -8,6 +8,7 @@ import Network
 import CoreMedia
 import CoreVideo
 import CryptoKit
+import Metal
 
 // Manages all post-RTSP transport streams for an active session:
 //   - ENet control    (controlServerPort): session keepalive + input
@@ -20,6 +21,9 @@ import CryptoKit
 final class StreamTransport {
 
     private let desc: StreamDescriptor
+    private let streamWidth: Int
+    private let streamHeight: Int
+    private var pyroWaveDecoder: PyroWaveDecoder?
     private let enet = ENetClient()
     private let rikey: Data
 
@@ -30,6 +34,11 @@ final class StreamTransport {
 
     var onENetDisconnect: (() -> Void)?
     var onVideoTexture:   ((CVPixelBuffer, CMTime) -> Void)?
+    // PyroWave frames arrive as three planar textures instead of a CVPixelBuffer.
+    var onPlanarFrame:    ((PlanarVideoFrame, CMTime) -> Void)?
+    // The renderer's device. Required when the negotiated codec is PyroWave, so the decoder
+    // writes textures the renderer can sample.
+    var metalDevice:      MTLDevice?
     var onClockReset:     (() -> Void)?
     var onAudioRecoveryStatusChange: ((AudioRecoveryStatus) -> Void)?
     // Fires once, ~5s after Start A/B, if no video packet has arrived by then (Phase 5). A
@@ -45,6 +54,8 @@ final class StreamTransport {
     init(descriptor: StreamDescriptor, config: StreamConfig, rikey: Data) {
         self.desc = descriptor
         self.rikey = rikey
+        self.streamWidth = config.width
+        self.streamHeight = config.height
 
         stats.requestedWidth = config.width
         stats.requestedHeight = config.height
@@ -82,6 +93,8 @@ final class StreamTransport {
                     streamActivity = nil
                 }
                 // Stop any receivers/engine that may have been started before the throw.
+                pyroWaveDecoder?.onFrameDecoded = nil; pyroWaveDecoder = nil
+                stats.pyroWaveStatsProvider = nil
                 videoReceiver?.stop(); videoReceiver = nil
                 audioReceiver?.stop(); audioReceiver = nil
                 audioEngine?.stop();   audioEngine   = nil
@@ -146,10 +159,20 @@ final class StreamTransport {
         decoder.stats = stats
         stats.requestedHdr = desc.dynamicRangeMode != 0
 
+        // PyroWave: build the decoder now, before Start A/B, so the first frames are not lost
+        // to a lazy shader compile. The device's pipelines are normally already warm
+        // (PyroWaveDevice.warmUp at negotiation); this call is a cache hit then.
+        var pyroWave: PyroWaveDecoder?
+        if desc.videoCodec == .pyrowave {
+            pyroWave = try await makePyroWaveDecoder()
+            pyroWaveDecoder = pyroWave
+        }
+
         let vr = RTPVideoReceiver(decoder: decoder,
                                   packetSize: desc.videoPacketSize,
                                   videoCodec: desc.videoCodec,
-                                  streamFps: stats.requestedFps)
+                                  streamFps: stats.requestedFps,
+                                  pyroWaveDecoder: pyroWave)
         vr.stats = stats
         vr.onFrameLost = { [weak self] frameNumber in
             // Gen7Enc IDR request: type 0x0302, payload [0,0], channel 1 (CTRL_CHANNEL_URGENT).
@@ -214,6 +237,34 @@ final class StreamTransport {
         startSucceeded = true
     }
 
+    /// Creates the PyroWave decoder for the negotiated stream: 8-bit 4:2:0 SDR until D8 and D9,
+    /// with range and matrix taken from the `encoderCscMode` SDPBuilder announced (decision Q3).
+    private func makePyroWaveDecoder() async throws -> PyroWaveDecoder {
+        guard let device = metalDevice else {
+            throw PyroWaveError.failed("no Metal device was passed to the transport", code: 0)
+        }
+        let format = PyroWaveStreamFormat(width: streamWidth, height: streamHeight,
+                                          chroma444: desc.chroma444, bitDepth: 8)
+        let cscMode = SDPBuilder.encoderCscMode(codec: .pyrowave, hdr: false)
+        let color = PlanarColorParams.forEncoderCscMode(cscMode, bitDepth: format.bitDepth, hdr: false)
+        // Off the main actor: the first creation per MTLDevice compiles the decode shaders.
+        let decoder = try await Task.detached(priority: .userInitiated) {
+            try PyroWaveDecoder(device: device, format: format, color: color)
+        }.value
+        decoder.stats = stats
+        decoder.onFrameDecoded = { [weak self] frame, pts in
+            self?.onPlanarFrame?(frame, pts)
+        }
+        stats.pyroWaveStatsProvider = { [weak decoder] in decoder?.counterSnapshot }
+        #if DEBUG
+        DebugFileLog.write("[ChloroFrame][pyrowave] decoder ready \(format.width)x\(format.height) "
+                         + "chroma444=\(format.chroma444) bitDepth=\(format.bitDepth) cscMode=\(cscMode) "
+                         + "fullRange=\(color.fullRange) matrix=\(color.matrix) transfer=\(color.transfer) "
+                         + "packetSize=\(desc.videoPacketSize)")
+        #endif
+        return decoder
+    }
+
     func stop(reason: String = "caller") {
         print("[ChloroFrame][transport] stop reason=\(reason)")
         noMediaWatchdog?.cancel()
@@ -226,6 +277,8 @@ final class StreamTransport {
         stats.stop()
         stats.audioStatsProvider = nil
         stats.audioReceiverStatsProvider = nil
+        stats.pyroWaveStatsProvider = nil
+        pyroWaveDecoder?.onFrameDecoded = nil; pyroWaveDecoder = nil
         videoReceiver?.stop();          videoReceiver      = nil
         audioReceiver?.stop();          audioReceiver      = nil
         audioEngine?.stop();            audioEngine        = nil

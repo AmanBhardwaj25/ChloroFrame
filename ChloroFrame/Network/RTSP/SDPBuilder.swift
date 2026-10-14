@@ -13,6 +13,13 @@ import Foundation
 
 nonisolated enum SDPBuilder {
 
+    /// The `x-nv-video[0].encoderCscMode` value for a request. 4 = BT.2020 limited (HDR10),
+    /// 2 = BT.709 limited (PyroWave SDR, decision Q3), 0 = BT.601 limited (every other SDR
+    /// request). Shared with the PyroWave color setup so the shader matches what was asked for.
+    static func encoderCscMode(codec: VideoCodec, hdr: Bool) -> Int {
+        hdr ? 4 : (codec == .pyrowave ? 2 : 0)
+    }
+
     /// Builds the client capability SDP sent in the ANNOUNCE body (after all SETUPs).
     /// Sunshine uses this to configure the encoder (resolution, FPS, bitrate, codec).
     /// Format mirrors Moonlight's SdpGenerator for AppVersion 7 / Sunshine.
@@ -49,7 +56,7 @@ nonisolated enum SDPBuilder {
         // codec keeps the existing value (see gotcha 11 in the PyroWave plan).
         let isPyroWave = config.codec == .pyrowave
         let chromaSamplingType = isPyroWave && config.yuv444 ? 1 : 0
-        let encoderCscMode = config.hdr ? 4 : (isPyroWave ? 2 : 0)
+        let encoderCscMode = encoderCscMode(codec: config.codec, hdr: config.hdr)
 
         func a(_ name: String, _ value: Any) -> String { "a=\(name):\(value) \r\n" }
 

@@ -30,6 +30,10 @@ nonisolated enum PyroWaveError: Error, CustomStringConvertible {
     }
 }
 
+extension PyroWaveError: LocalizedError {
+    nonisolated var errorDescription: String? { description }
+}
+
 nonisolated final class PyroWaveDevice: @unchecked Sendable {
 
     let mtlDevice: MTLDevice

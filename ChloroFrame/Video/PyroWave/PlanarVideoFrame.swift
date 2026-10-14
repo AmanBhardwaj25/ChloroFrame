@@ -41,14 +41,19 @@ nonisolated final class PlanarFramePool: @unchecked Sendable {
     let bitDepth: Int
     let maxFrames: Int
 
+    /// Stamped on every frame handed out; set from what the session negotiated.
+    let color: PlanarColorParams
+
     private let storageMode: MTLStorageMode
     private let lock = NSLock()
     private var free: [(y: MTLTexture, cb: MTLTexture, cr: MTLTexture)] = []
     private var inUse = 0
 
     /// - Parameter storageMode: `.private` for streaming; tests pass `.shared` to read back.
+    /// - Parameter color: defaults to BT.709 limited SDR, the stream ChloroFrame asks for (Q3).
     init(device: MTLDevice, width: Int, height: Int, chroma444: Bool, bitDepth: Int,
-         maxFrames: Int = 16, storageMode: MTLStorageMode = .private) {
+         maxFrames: Int = 16, storageMode: MTLStorageMode = .private,
+         color: PlanarColorParams? = nil) {
         self.device = device
         self.width = width
         self.height = height
@@ -56,6 +61,8 @@ nonisolated final class PlanarFramePool: @unchecked Sendable {
         self.bitDepth = bitDepth
         self.maxFrames = maxFrames
         self.storageMode = storageMode
+        self.color = color ?? PlanarColorParams(bitDepth: bitDepth, fullRange: false,
+                                                matrix: .bt709, transfer: .sdr)
     }
 
     /// Frames currently handed out and not yet released.
@@ -83,9 +90,7 @@ nonisolated final class PlanarFramePool: @unchecked Sendable {
             return nil
         }
         return PlanarVideoFrame(y: planes.y, cb: planes.cb, cr: planes.cr,
-                                color: PlanarColorParams(bitDepth: bitDepth, fullRange: false,
-                                                         matrix: .bt709, transfer: .sdr),
-                                pool: self)
+                                color: color, pool: self)
     }
 
     fileprivate func recycle(y: MTLTexture, cb: MTLTexture, cr: MTLTexture) {

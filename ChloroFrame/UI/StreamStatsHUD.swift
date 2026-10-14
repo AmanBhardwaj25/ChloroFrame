@@ -24,6 +24,10 @@ struct StreamStatsHUD: View {
             networkSection(s)
             Divider().background(Color.white.opacity(0.15)).padding(.vertical, 6)
             decodeSection(s)
+            if let pw = s.pyroWave {
+                Divider().background(Color.white.opacity(0.15)).padding(.vertical, 6)
+                pyroWaveSection(pw)
+            }
             Divider().background(Color.white.opacity(0.15)).padding(.vertical, 6)
             renderSection(s)
             Divider().background(Color.white.opacity(0.15)).padding(.vertical, 6)
@@ -93,6 +97,19 @@ struct StreamStatsHUD: View {
             label("DECODE")
             row("Latency", String(format: "avg %.1f ms  max %.1f ms", s.decodeAvgMs, s.decodeMaxMs))
             row("Frames",  "\(s.framesDecoded) decoded  ·  \(s.framesDropped) dropped")
+        }
+    }
+
+    // Shown only while a PyroWave stream is active (the collector's provider is nil otherwise).
+    private func pyroWaveSection(_ c: PyroWaveDecoder.Counters) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            label("PYROWAVE")
+            row("GPU decode", String(format: "avg %.2f ms  max %.2f ms", c.decodeAvgMs, c.gpuMsMax))
+            row("Rejects",    "\(c.parseRejects) parse  ·  \(c.pushRejects) push")
+            row("Incomplete", "\(c.incomplete)")
+            row("Pool full",  "\(c.poolExhausted)")
+            row("Replaced",   "\(c.mailboxReplaced)  (mailbox)")
+            row("GPU fails",  "\(c.gpuFailures)")
         }
     }
 

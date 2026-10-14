@@ -43,6 +43,10 @@ final class RTPVideoReceiver {
     private let decoder: VideoDecoder
     private let videoCodec: VideoCodec
     private let streamFps: Int
+    private let packetSize: Int
+    // PyroWave only; nil for every other codec.
+    private let pyroWaveDecoder: PyroWaveDecoder?
+    private var loggedPyroWaveTrimFailures = 0
 
     private var vpsData: Data?   // HEVC only
     private var spsData: Data?
@@ -62,8 +66,11 @@ final class RTPVideoReceiver {
 
     private let queue: RtpVideoQueue
 
-    init(decoder: VideoDecoder, packetSize: Int = 1392, videoCodec: VideoCodec = .h264, streamFps: Int = 120) {
+    init(decoder: VideoDecoder, packetSize: Int = 1392, videoCodec: VideoCodec = .h264, streamFps: Int = 120,
+         pyroWaveDecoder: PyroWaveDecoder? = nil) {
         self.decoder = decoder
+        self.packetSize = packetSize
+        self.pyroWaveDecoder = pyroWaveDecoder
         self.videoCodec = videoCodec
         self.streamFps = streamFps > 0 ? streamFps : 120
         let useSwift = UserDefaults.standard.bool(forKey: "useSwiftFEC")
@@ -82,11 +89,13 @@ final class RTPVideoReceiver {
     ///   IPv4-only callers are unaffected.
     func start(host: String, serverPort: UInt16, localPort: UInt16, pingPayload: String,
                pinInterfaceIndex: UInt32? = nil, family: Int32 = AF_INET) async throws {
-        queue.onFrameAssembled = { [weak self] _, frameBytes, rtpTimestamp, frameType in
+        queue.onFrameAssembled = { [weak self] _, frameBytes, rtpTimestamp, meta in
             guard let self else { return }
             self.advanceRtpTimeline(rtpTimestamp)
-            if self.videoCodec == .av1 {
-                self.processAV1Frame(frameBytes, frameType: frameType)
+            if self.videoCodec == .pyrowave {
+                self.processPyroWaveFrame(frameBytes, meta: meta)
+            } else if self.videoCodec == .av1 {
+                self.processAV1Frame(frameBytes, frameType: meta.frameType)
             } else {
                 self.processFrame(frameBytes)
             }
@@ -94,8 +103,15 @@ final class RTPVideoReceiver {
 
         queue.onFrameLost = { [weak self] frameNumber in
             guard let self else { return }
-            self.waitingForIdr = true
-            self.onFrameLost?(frameNumber)
+            // PyroWave frames are independent: no IDR gating and no IDR request (the queue has
+            // already counted the loss in the stats). Other codecs behave exactly as before.
+            switch VideoLossPolicy.action(for: self.videoCodec) {
+            case .waitForIdrAndRequest:
+                self.waitingForIdr = true
+                self.onFrameLost?(frameNumber)
+            case .countOnly:
+                break
+            }
         }
 
         let fd = socket(family, SOCK_DGRAM, 0)
@@ -403,6 +419,29 @@ final class RTPVideoReceiver {
         let sample = Data(buffer: UnsafeBufferPointer(rebasing: frameBytes[0..<validLen]))
         let pts = CMTime(value: extendedRtpTs, timescale: 90_000)
         decoder.decode(nalUnit: sample, presentationTime: pts, resetClockBeforeOutput: isResetFrame)
+    }
+
+    /// PyroWave path. Every frame is independent, so there is no key-frame gating, no clock
+    /// reset and no IDR request. The reassembled buffer ends with zero padding to a full
+    /// shard; it is trimmed to `meta.lastPayloadLen` before the record parser sees it,
+    /// otherwise the padding reads as a zero length block record and every frame is rejected.
+    private func processPyroWaveFrame(_ frameBytes: UnsafeBufferPointer<UInt8>, meta: FrameMeta) {
+        guard let pyroWaveDecoder else { return }
+        switch PyroWaveFrameTrim.validLength(assembledCount: frameBytes.count,
+                                             lastPayloadLen: meta.lastPayloadLen,
+                                             packetSize: packetSize) {
+        case .failure(let failure):
+            pyroWaveDecoder.recordTrimReject()
+            if loggedPyroWaveTrimFailures < 5 {
+                loggedPyroWaveTrimFailures += 1
+                print("[RTPVideoReceiver] PyroWave frame dropped, trim failed: \(failure) "
+                      + "(assembled=\(frameBytes.count) packetSize=\(packetSize))")
+            }
+        case .success(let validLen):
+            framesProcessed += 1
+            let frame = Data(buffer: UnsafeBufferPointer(rebasing: frameBytes[0..<validLen]))
+            pyroWaveDecoder.submit(frame: frame, pts: CMTime(value: extendedRtpTs, timescale: 90_000))
+        }
     }
 
     // MARK: - Helpers

@@ -24,12 +24,18 @@ nonisolated final class PyroWaveDecoder: @unchecked Sendable {
     struct Counters: Equatable {
         var submitted = 0
         var decoded = 0
-        var parseRejects = 0       // record parser refused the frame
+        var parseRejects = 0       // record parser refused the frame (or the trim step did)
         var pushRejects = 0        // C parser refused a record
         var incomplete = 0         // decode_is_ready reported false
         var poolExhausted = 0
         var mailboxReplaced = 0
         var gpuFailures = 0
+        /// Sum and peak of GPU execution time (`gpuEndTime - gpuStartTime`) over `decoded`
+        /// frames, in milliseconds. `decodeAvgMs` is the per-frame average.
+        var gpuMsTotal = 0.0
+        var gpuMsMax = 0.0
+
+        var decodeAvgMs: Double { decoded > 0 ? gpuMsTotal / Double(decoded) : 0 }
     }
 
     var onFrameDecoded: ((PlanarVideoFrame, CMTime) -> Void)?
@@ -61,6 +67,7 @@ nonisolated final class PyroWaveDecoder: @unchecked Sendable {
     private var drainScheduled = false
     private var counters = Counters()
     private var loggedRejects = 0
+    private var reportedFirstFrame = false
 
     var counterSnapshot: Counters { lock.withLock { counters } }
 
@@ -70,7 +77,8 @@ nonisolated final class PyroWaveDecoder: @unchecked Sendable {
     /// Creating the shared PyroWave device compiles shaders on first use, so build the
     /// decoder off the main thread (or call `PyroWaveDevice.warmUp` earlier).
     init(device mtlDevice: MTLDevice, format: PyroWaveStreamFormat,
-         storageMode: MTLStorageMode = .private) throws {
+         storageMode: MTLStorageMode = .private,
+         color: PlanarColorParams? = nil) throws {
         guard format.width > 0, format.height > 0,
               format.width <= 16384, format.height <= 16384 else {
             throw PyroWaveError.invalidFormat("size \(format.width)x\(format.height)")
@@ -104,7 +112,7 @@ nonisolated final class PyroWaveDecoder: @unchecked Sendable {
         self.commandQueue.label = "PyroWave decode"
         self.pool = PlanarFramePool(device: mtlDevice, width: format.width, height: format.height,
                                     chroma444: format.chroma444, bitDepth: format.bitDepth,
-                                    storageMode: storageMode)
+                                    storageMode: storageMode, color: color)
     }
 
     deinit {
@@ -132,6 +140,13 @@ nonisolated final class PyroWaveDecoder: @unchecked Sendable {
         }
         if replaced { stats?.recordFrameDropped() }
         if schedule { queue.async { [self] in drain() } }
+    }
+
+    /// A frame the transport could not trim to its real length. Counted with the parse rejects
+    /// (the frame never reached the record parser), and as a dropped frame.
+    func recordTrimReject() {
+        lock.withLock { counters.parseRejects += 1 }
+        stats?.recordFrameDropped()
     }
 
     // MARK: - Decode queue
@@ -223,7 +238,19 @@ nonisolated final class PyroWaveDecoder: @unchecked Sendable {
             }
             let gpuMs = (buffer.gpuEndTime - buffer.gpuStartTime) * 1000
             onGPUTime?(gpuMs)
-            lock.withLock { counters.decoded += 1 }
+            let first: Bool = lock.withLock {
+                counters.decoded += 1
+                counters.gpuMsTotal += gpuMs
+                counters.gpuMsMax = max(counters.gpuMsMax, gpuMs)
+                let isFirst = !reportedFirstFrame
+                reportedFirstFrame = true
+                return isFirst
+            }
+            if first {
+                // The HUD's "received" rows describe the first successfully decoded frame.
+                stats?.setReceivedCodec(.pyrowave)
+                stats?.setReceivedHdr(planar.color.isPQ)
+            }
             stats?.recordFrameDecoded(latencyMs: (CACurrentMediaTime() - submitTime) * 1000)
             onFrameDecoded?(planar, pts)
         }

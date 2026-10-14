@@ -201,7 +201,7 @@ nonisolated struct PyroWaveAuditInputs: Sendable {
     // C14
     var userWantsHDR = false
     var userWants444 = false
-    // C15. nil until D6 measures it. Average GPU milliseconds per frame at the stream size.
+    // C15. nil when the benchmark could not run. Average GPU milliseconds per frame at the stream size.
     var gpuDecodeMs: Double?
     // C16. nil until D7b.
     var udpTestPassed: Bool?
@@ -466,8 +466,8 @@ nonisolated enum PyroWaveReadinessAudit {
 
     private static func c15(_ i: PyroWaveAuditInputs) -> PyroWaveCheckResult {
         guard let ms = i.gpuDecodeMs else {
-            return make("C15", .blocker, .unknown("decode benchmark not run yet"),
-                        unknown: .silent, detail: "Measured at the stream size once the decoder is wired into streaming.")
+            return make("C15", .blocker, .unknown("decode benchmark did not run"),
+                        unknown: .silent, detail: "The GPU decode benchmark at the stream size could not be completed.")
         }
         let text = String(format: "%.2f ms", ms)
         if ms < decodeWarningMs { return make("C15", .blocker, .pass, detail: "Average GPU decode \(text).") }

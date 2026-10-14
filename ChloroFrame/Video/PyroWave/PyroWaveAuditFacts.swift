@@ -13,6 +13,7 @@
 
 import Foundation
 import IOKit.ps
+import Metal
 
 // MARK: - Local system facts
 
@@ -73,6 +74,10 @@ enum PyroWaveAuditRunner {
         let started = Date()
         let address = client.activeAddress
 
+        // C15 runs alongside the route lookup and the HTTPS request so it adds no wall time of
+        // its own beyond whatever it exceeds them by. Cached per stream format for the session.
+        async let benchmark = decodeBenchmark(width: display.width, height: display.height)
+
         // Route and this Mac's link, off the main actor (getaddrinfo and CoreWLAN can block).
         let (route, macLink) = await Task.detached(priority: .userInitiated) { () -> (RouteInfo?, PyroWaveMacLink?) in
             // 48010 is RTSP's default port; only the destination address matters here.
@@ -119,6 +124,8 @@ enum PyroWaveAuditRunner {
         inputs.suppressAWDLEnabled = UserDefaults.standard.object(forKey: "suppressAWDLDuringStream") as? Bool ?? true
         inputs.awdlHelperInstalled = AWDLSuppressor.shared.isHelperInstalled
         inputs.userWantsHDR = userWantsHDR
+        let bench = await benchmark
+        inputs.gpuDecodeMs = bench.ms
 
         let report = PyroWaveReadinessAudit.evaluate(inputs)
 
@@ -128,11 +135,31 @@ enum PyroWaveAuditRunner {
             + "dest=\(route?.destination ?? "?") iface=\(route?.interfaceName ?? "?") "
             + "kind=\(macLink.map { "\($0.kind)" } ?? "?") band=\(macLink?.wifiBand.map { "\($0)" } ?? "unknown") "
             + "macLinkMbps=\(macLink?.linkMbps.map(String.init) ?? "?") hostInfo=\(fetchNote) "
-            + "requestedKbps=\(requestedKbps) elapsedMs=\(ms) blocked=\(report.blocked)"
+            + "requestedKbps=\(requestedKbps) decodeBenchmark=\(bench.note) elapsedMs=\(ms) blocked=\(report.blocked)"
         for line in report.logLines { lines += "\n    \(line)" }
         DebugFileLog.write(lines)
         #endif
         StreamLog.log("[ChloroFrame][pyrowave-audit] reason=\(reason) blocked=\(report.blocked) elapsedMs=\(ms) \(report.logLines.joined(separator: "; "))")
         return report
+    }
+
+    /// C15 input: average GPU decode ms at this stream size (8-bit 4:2:0 until D8 and D9), from
+    /// the session cache or a fresh benchmark. nil when it could not be measured, which the
+    /// audit reports as an unknown, never as a slow GPU.
+    nonisolated private static func decodeBenchmark(width: Int, height: Int) async -> (ms: Double?, note: String) {
+        guard VideoCapabilities.supportsPyroWave, let device = MTLCreateSystemDefaultDevice() else {
+            return (nil, "skipped (no supported GPU)")
+        }
+        let format = PyroWaveStreamFormat(width: width, height: height, chroma444: false, bitDepth: 8)
+        if let cached = PyroWaveBenchmarkCache.averageGPUMs(for: format) {
+            return (cached, String(format: "%.2fms cached", cached))
+        }
+        do {
+            let m = try await PyroWaveDecodeBenchmark.measure(device: device, format: format)
+            PyroWaveBenchmarkCache.store(m.averageGPUMs, for: format)
+            return (m.averageGPUMs, String(format: "%.2fms max=%.2fms wall=%.0fms", m.averageGPUMs, m.maxGPUMs, m.wallMs))
+        } catch {
+            return (nil, "failed: \(error)")
+        }
     }
 }

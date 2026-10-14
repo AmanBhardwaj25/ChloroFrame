@@ -36,6 +36,36 @@ private let kFlagSOF: UInt8 = 0x04
 private let kFlagEOF: UInt8 = 0x02
 private let kFlagPIC: UInt8 = 0x01
 
+// ─── Frame metadata ───────────────────────────────────────────────────────────
+
+/// Per-frame facts read from the 8-byte short frame header on the SOF packet of FEC block 0.
+/// H.264, HEVC and AV1 read only `frameType`; the other fields exist for PyroWave.
+nonisolated struct FrameMeta: Equatable {
+    /// Header byte 3: 1=P, 2=IDR, 4=intra-refresh, 5=P-ref-inval. 1 when no header was present.
+    var frameType: UInt8 = 1
+    /// Header bytes 4-5 (LE16): payload bytes that are real data in the last data packet
+    /// (the rest is zero padding). 0 when unknown (no header, or the extended 0x81 header).
+    var lastPayloadLen: Int = 0
+    /// Header bytes 6-7 (LE16): number of leading packets that carry the PyroWave critical
+    /// (coarsest) data, 0 when unknown. Used by partial-frame recovery (D10).
+    var pyroWaveCriticalPackets: Int = 0
+
+    /// Parses the frame header whose first byte is at `headerOffset` in `slot`. Every read is
+    /// bounds-checked. Only the standard 8-byte header (any first byte but 0x81) carries
+    /// `lastPayloadLen` and the critical packet count; for the extended 0x81 header those stay 0.
+    static func parseShortHeader(_ slot: [UInt8], headerOffset: Int) -> FrameMeta {
+        var meta = FrameMeta()
+        let firstByte: UInt8 = headerOffset < slot.count ? slot[headerOffset] : 0x01
+        let typeOffset = headerOffset + 3
+        meta.frameType = typeOffset < slot.count ? slot[typeOffset] : 1
+        if firstByte != 0x81, headerOffset + 7 < slot.count {
+            meta.lastPayloadLen = Int(slot[headerOffset + 4]) | Int(slot[headerOffset + 5]) << 8
+            meta.pyroWaveCriticalPackets = Int(slot[headerOffset + 6]) | Int(slot[headerOffset + 7]) << 8
+        }
+        return meta
+    }
+}
+
 // ─── Add-result ───────────────────────────────────────────────────────────────
 
 enum RtpvAddResult {
@@ -54,12 +84,13 @@ final class RtpVideoQueue {
 
     // Emitted once per fully assembled frame with a borrowed view of the complete
     // elementary byte stream (all blocks, in sequence order).
-    // Parameters: (frameIndex, frameBytes, rtpTimestamp, frameType)
+    // Parameters: (frameIndex, frameBytes, rtpTimestamp, meta)
     // rtpTimestamp is the RTP timestamp of the frame (90 kHz clock, big-endian bytes 4-7 of RTP header).
-    // frameType is the Sunshine frame-header type byte (1=P, 2=IDR, 4=intra-refresh,
+    // meta.frameType is the Sunshine frame-header type byte (1=P, 2=IDR, 4=intra-refresh,
     // 5=P-ref-inval; 1 when no header was present). H.264/HEVC ignore it; AV1 uses it.
+    // meta.lastPayloadLen and meta.pyroWaveCriticalPackets are for PyroWave (see FrameMeta).
     // The pointer is only valid for the duration of the call — copy if it must outlive it.
-    var onFrameAssembled: ((UInt32, UnsafeBufferPointer<UInt8>, UInt32, UInt8) -> Void)?
+    var onFrameAssembled: ((UInt32, UnsafeBufferPointer<UInt8>, UInt32, FrameMeta) -> Void)?
 
     // Fired when a frame is determined to be unrecoverable (lost FEC block or frame gap).
     // The receiver should discard P-frames and request an IDR from the server.
@@ -118,6 +149,9 @@ final class RtpVideoQueue {
     // 2=IDR, 4=intra-refresh, 5=P-ref-inval. Defaults to 1 (P) when no header is
     // present. Read in stageBlock when the SOF header is parsed, emitted in submitFrame.
     private var currentFrameType: UInt8 = 1
+    // Short-header fields beyond frameType (PyroWave). Reset together with currentFrameType.
+    private var currentLastPayloadLen = 0
+    private var currentCriticalPackets = 0
 
     private var packetLogCount = 0
     private var blockLogCount = 0
@@ -227,6 +261,8 @@ final class RtpVideoQueue {
                 // present, so a frame whose header is unavailable can't inherit a
                 // stale (e.g. IDR) type from the previous frame.
                 currentFrameType = 1
+                currentLastPayloadLen = 0
+                currentCriticalPackets = 0
             }
         }
 
@@ -444,8 +480,10 @@ final class RtpVideoQueue {
                 // Frame-type byte lives at offset +3 of the SOF frame header
                 // (1=P, 2=IDR, 4=intra-refresh, 5=P-ref-inval). Used for AV1 IDR
                 // detection; H.264/HEVC keep using SPS/VPS arrival and ignore this.
-                let typeOffset = baseOffset + 3
-                currentFrameType = typeOffset < slotData[i].count ? slotData[i][typeOffset] : 1
+                let meta = FrameMeta.parseShortHeader(slotData[i], headerOffset: baseOffset)
+                currentFrameType = meta.frameType
+                currentLastPayloadLen = meta.lastPayloadLen
+                currentCriticalPackets = meta.pyroWaveCriticalPackets
                 if frameLogCount < 8 {
                     StreamLog.log("[rtp/queue] frame header firstByte=0x\(String(format: "%02x", firstByte)) size=\(frameHeaderSize) frameType=\(currentFrameType)")
                 }
@@ -474,9 +512,11 @@ final class RtpVideoQueue {
         let ts = currentFrameRtpTimestamp
         stats?.recordFrameAssembled(rtpTimestamp: ts)
         let frame = currentFrameNumber
-        let type = currentFrameType
+        let meta = FrameMeta(frameType: currentFrameType,
+                             lastPayloadLen: currentLastPayloadLen,
+                             pyroWaveCriticalPackets: currentCriticalPackets)
         frameAssembly.withUnsafeBufferPointer { buf in
-            onFrameAssembled?(frame, buf, ts, type)
+            onFrameAssembled?(frame, buf, ts, meta)
         }
     }
 
