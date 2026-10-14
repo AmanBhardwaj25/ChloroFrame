@@ -56,10 +56,14 @@ nonisolated struct PyroWaveHostInfo: Equatable, Sendable {
         )
     }
 
-    /// C3: the version keys are Vibeshine's wire contract, so they fingerprint a host that
-    /// speaks exactly what ChloroFrame implements.
+    /// C3: any paired `PyroWave*` key means the host is a PyroWave-capable Vibeshine build.
+    /// Apollo and Sunshine send none of them. Requiring specific version keys was too strict:
+    /// a real Vibeshine host was seen sending the link speed but not the wire budget or
+    /// handshake versions.
     var looksLikeVibeshine: Bool {
-        (wireBudgetVersion ?? 0) >= 1 && (udpHandshakeVersion ?? 0) >= 1
+        linkMbps != nil || wireBudgetVersion != nil || udpProbeVersion != nil
+            || udpHandshakeVersion != nil || udpProbeBurstVersion != nil
+            || criticalFecPercentage != nil || minParityShards != nil
     }
 }
 

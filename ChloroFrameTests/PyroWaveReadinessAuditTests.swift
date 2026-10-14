@@ -90,14 +90,15 @@ final class PyroWaveReadinessAuditTests: XCTestCase {
         if case .fail = r.outcome {} else { XCTFail("expected a hard fail, not unknown") }
     }
 
-    func testC3NeedsBothVersionKeys() {
+    /// A real Vibeshine host was seen sending only the link speed. Any PyroWave key passes.
+    func testC3AnyPyroWaveKeyPasses() {
         var i = good()
-        i.hostInfo = PyroWaveHostInfo(wireBudgetVersion: 1)
-        XCTAssertTrue(row("C3", i).failedAsBlocker)
-        i.hostInfo = PyroWaveHostInfo(udpHandshakeVersion: 1)
-        XCTAssertTrue(row("C3", i).failedAsBlocker)
-        i.hostInfo = PyroWaveHostInfo(wireBudgetVersion: 0, udpHandshakeVersion: 1)
-        XCTAssertTrue(row("C3", i).failedAsBlocker)
+        for info in [PyroWaveHostInfo(linkMbps: 1000),
+                     PyroWaveHostInfo(wireBudgetVersion: 1),
+                     PyroWaveHostInfo(criticalFecPercentage: 20)] {
+            i.hostInfo = info
+            XCTAssertEqual(row("C3", i).outcome, .pass)
+        }
     }
 
     func testC3FetchFailureBlocksAsUnknown() {
