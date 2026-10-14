@@ -64,6 +64,9 @@ nonisolated struct PyroWaveExperimentConfig: Codable, Equatable {
     var udpProbeIgnoreVersionKeys: Bool = false
     /// false: the even 1 ms schedule instead of frame-shaped bursts (to separate the two).
     var udpProbeFrameShaped: Bool = true
+    /// Overrides the "4:4:4 chroma (PyroWave)" setting for the run (D8); the stored value comes
+    /// back afterwards. nil: leave the setting alone.
+    var chroma444: Bool?
     var phases: [Phase]
 
     init(hostName: String? = nil, appTitle: String? = nil, startupTimeoutSeconds: Double = 90,
@@ -90,6 +93,7 @@ nonisolated struct PyroWaveExperimentConfig: Codable, Equatable {
         udpProbeKbps = try c.decodeIfPresent(Int.self, forKey: .udpProbeKbps)
         udpProbeIgnoreVersionKeys = try c.decodeIfPresent(Bool.self, forKey: .udpProbeIgnoreVersionKeys) ?? false
         udpProbeFrameShaped = try c.decodeIfPresent(Bool.self, forKey: .udpProbeFrameShaped) ?? true
+        chroma444 = try c.decodeIfPresent(Bool.self, forKey: .chroma444)
         phases = try c.decodeIfPresent([Phase].self, forKey: .phases) ?? []
     }
 

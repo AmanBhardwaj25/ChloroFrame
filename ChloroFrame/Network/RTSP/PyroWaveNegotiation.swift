@@ -21,6 +21,17 @@ nonisolated enum PyroWaveNegotiation {
         var bitstreamMismatch: Bool
     }
 
+    /// The 4:4:4 decision (D8). 4:4:4 is requested only when the user asked for it AND the host
+    /// advertised `SCM_PYROWAVE_444`; otherwise the stream is 4:2:0 and `fallbackReason` says why
+    /// (nil when the user did not ask for 4:4:4, so nothing needs logging).
+    static func chooseChroma(userWants444: Bool, hostSupports444: Bool) -> (use444: Bool, fallbackReason: String?) {
+        guard userWants444 else { return (false, nil) }
+        guard hostSupports444 else {
+            return (false, "4:4:4 requested but the host does not advertise SCM_PYROWAVE_444, using 4:2:0")
+        }
+        return (true, nil)
+    }
+
     /// Call only when `config.codec == .pyrowave`.
     static func resolve(config: StreamConfig, sdp: SDPInfo, networkClass: StreamNetworkClass) -> Outcome {
         var result = config

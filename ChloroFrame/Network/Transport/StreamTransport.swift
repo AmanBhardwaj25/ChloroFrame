@@ -238,7 +238,7 @@ final class StreamTransport {
         startSucceeded = true
     }
 
-    /// Creates the PyroWave decoder for the negotiated stream: 8-bit 4:2:0 SDR until D8 and D9,
+    /// Creates the PyroWave decoder for the negotiated stream: 8-bit SDR until D9, 4:2:0 or 4:4:4 per the negotiated chroma,
     /// with range and matrix taken from the `encoderCscMode` SDPBuilder announced (decision Q3).
     private func makePyroWaveDecoder() async throws -> PyroWaveDecoder {
         guard let device = metalDevice else {

@@ -214,6 +214,17 @@ final class PyroWaveRoundTripTests: XCTestCase {
                      yPSNR, cbPSNR, crPSNR, avgGPU, maxGPU, avgE2E))
 
         XCTAssertGreaterThanOrEqual(yPSNR, minLumaPSNR, "\(label) luma PSNR", file: file, line: line)
+        // Chroma plane geometry follows the negotiated profile (D8).
+        let expectedChromaWidth = chroma444 ? width : width / 2
+        let expectedChromaHeight = chroma444 ? height : height / 2
+        XCTAssertEqual(first.frame.cb.width, expectedChromaWidth, "\(label) Cb width", file: file, line: line)
+        XCTAssertEqual(first.frame.cb.height, expectedChromaHeight, "\(label) Cb height", file: file, line: line)
+        XCTAssertEqual(first.frame.cr.width, expectedChromaWidth, "\(label) Cr width", file: file, line: line)
+        XCTAssertEqual(first.frame.cr.height, expectedChromaHeight, "\(label) Cr height", file: file, line: line)
+        if !dense {
+            XCTAssertGreaterThanOrEqual(cbPSNR, 30, "\(label) Cb PSNR", file: file, line: line)
+            XCTAssertGreaterThanOrEqual(crPSNR, 30, "\(label) Cr PSNR", file: file, line: line)
+        }
         XCTAssertLessThan(avgGPU, 4.0, "\(label): GPU decode is over the 4 ms stop line", file: file, line: line)
 
         let counters = harness.decoder.counterSnapshot

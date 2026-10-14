@@ -464,10 +464,12 @@ nonisolated enum PyroWaveReadinessAudit {
         if m & ServerInfo.scmPyroWaveHDR10 != 0     { hostProfiles.append("HDR10 4:2:0") }
         if m & ServerInfo.scmPyroWaveHDR10_444 != 0 { hostProfiles.append("HDR10 4:4:4") }
         let host = hostProfiles.isEmpty ? "none" : hostProfiles.joined(separator: ", ")
-        // Until D8 and D9 land, ChloroFrame always requests 8-bit 4:2:0.
-        var note = "Host offers: \(host). Will use: 4:2:0 8-bit."
-        if i.userWantsHDR  { note += " HDR was requested but PyroWave HDR10 is not supported yet." }
-        if i.userWants444  { note += " 4:4:4 was requested but is not supported yet." }
+        // D8: 4:4:4 only when asked for and offered, the same rule the launch applies. Until D9
+        // lands the stream is always 8-bit.
+        let use444 = i.userWants444 && m & ServerInfo.scmPyroWave444 != 0
+        var note = "Host offers: \(host). Will use: \(use444 ? "4:4:4" : "4:2:0") 8-bit."
+        if i.userWantsHDR { note += " HDR was requested but PyroWave HDR10 is not supported yet." }
+        if i.userWants444 && !use444 { note += " 4:4:4 was requested but the host does not offer it, so 4:2:0 is used." }
         return make("C14", .info, .pass, detail: note)
     }
 

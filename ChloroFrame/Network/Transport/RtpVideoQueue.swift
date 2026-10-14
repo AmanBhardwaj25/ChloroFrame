@@ -200,6 +200,9 @@ final class RtpVideoQueue {
     private var frameLogCount = 0
     private var fecLogCount = 0
     private var rejectLogCount = 0
+    #if DEBUG
+    private var debugRejectLogCount = 0
+    #endif
 
     init(packetSize: Int = 1392, useSwiftFEC: Bool = false, partialDelivery: Bool = false) {
         self.packetSize = packetSize
@@ -785,6 +788,13 @@ final class RtpVideoQueue {
     // (duplicates, stale packets) paid for string interpolation even after the
     // 8-line log cap was reached.
     private func reject(_ reason: @autoclosure () -> String) -> RtpvAddResult {
+        #if DEBUG
+        // DEBUG only: the first few rejects of a session, to see why a stream produces no frames.
+        if debugRejectLogCount < 12 {
+            DebugFileLog.write("[rtp/queue] reject \(reason())")
+            debugRejectLogCount += 1
+        }
+        #endif
         if StreamLog.verbose && rejectLogCount < 8 {
             StreamLog.log("[rtp/queue] reject \(reason())")
             rejectLogCount += 1

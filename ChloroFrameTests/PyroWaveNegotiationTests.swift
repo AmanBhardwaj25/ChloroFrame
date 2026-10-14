@@ -115,6 +115,41 @@ final class PyroWaveNegotiationTests: XCTestCase {
 
     // MARK: - Default bitrate
 
+    // MARK: - 4:4:4 choice (D8)
+
+    func testChromaIs420WhenNotRequested() {
+        let r = PyroWaveNegotiation.chooseChroma(userWants444: false, hostSupports444: true)
+        XCTAssertFalse(r.use444)
+        XCTAssertNil(r.fallbackReason)
+    }
+
+    func testChromaIs444WhenRequestedAndOffered() {
+        let r = PyroWaveNegotiation.chooseChroma(userWants444: true, hostSupports444: true)
+        XCTAssertTrue(r.use444)
+        XCTAssertNil(r.fallbackReason)
+    }
+
+    func testChromaFallsBackTo420WhenHostLacks444() {
+        let r = PyroWaveNegotiation.chooseChroma(userWants444: true, hostSupports444: false)
+        XCTAssertFalse(r.use444)
+        XCTAssertNotNil(r.fallbackReason)
+    }
+
+    func testStaysPyroWave444WhenAdvertisedOnLocalRoute() {
+        var c = request()
+        c.yuv444 = true
+        let sdp = SDPInfo(withPyroWave)
+        let o = PyroWaveNegotiation.resolve(config: c, sdp: sdp, networkClass: .local)
+        XCTAssertNil(o.downgradeReason)
+        XCTAssertTrue(o.config.yuv444)
+    }
+
+    func testPyroWave444BitrateDefaultIsOnePointOneFiveTimesLarger() {
+        let base = PyroWaveBitrate.defaultKbps(width: 3024, height: 1890, fps: 60)
+        let wide = PyroWaveBitrate.defaultKbps(width: 3024, height: 1890, fps: 60, yuv444: true)
+        XCTAssertEqual(Double(wide), Double(base) * 1.15, accuracy: 1)
+    }
+
     func testDefaultBitrateMatchesTheAuthorsGuide() {
         XCTAssertEqual(PyroWaveBitrate.defaultKbps(width: 1920, height: 1080, fps: 60), 220_000)
         XCTAssertEqual(PyroWaveBitrate.defaultKbps(width: 2560, height: 1440, fps: 120), 580_000)

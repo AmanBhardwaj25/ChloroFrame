@@ -88,9 +88,15 @@ final class PyroWaveExperimentRunner {
         guard !isRunning else { return }
         isRunning = true
         config = cfg
+        let storedChroma444 = UserDefaults.standard.object(forKey: "pyroWave444")
+        if let want = cfg.chroma444 { UserDefaults.standard.set(want, forKey: "pyroWave444") }
         defer {
             isRunning = false
             config = nil
+            if cfg.chroma444 != nil {
+                if let storedChroma444 { UserDefaults.standard.set(storedChroma444, forKey: "pyroWave444") }
+                else { UserDefaults.standard.removeObject(forKey: "pyroWave444") }
+            }
             UserDefaults.standard.removeObject(forKey: "pyroWavePartialDelivery")
             PyroWaveExperimentControl.setLoss(percent: 0, burstLength: 1)
         }
@@ -148,12 +154,14 @@ final class PyroWaveExperimentRunner {
     /// report text. The probe needs the paired HTTPS port, which a serverinfo call sets.
     private func runUdpProbes(_ cfg: PyroWaveExperimentConfig, host: Host) async -> String {
         let client = SunshineHTTPClient(host: host)
-        _ = try? await client.fetchServerInfo()
+        let info = try? await client.fetchServerInfo()
         let display = DisplayConfig.detect()
         let override = UserDefaults.standard.integer(forKey: "streamOverrideBitrate")
+        let use444 = UserDefaults.standard.bool(forKey: "pyroWave444")
+            && (info?.supportsPyroWave444 ?? false)
         let kbps = cfg.udpProbeKbps
             ?? (override > 0 ? override
-                : PyroWaveBitrate.defaultKbps(width: display.width, height: display.height, fps: display.fps))
+                : PyroWaveBitrate.defaultKbps(width: display.width, height: display.height, fps: display.fps, yuv444: use444))
         var text = "UDP network test (D7b), \(cfg.udpProbeRepeats) run(s) at \(kbps / 1000) Mbps\n"
         for n in 1...cfg.udpProbeRepeats {
             let result = await PyroWaveNetworkTest.run(client: client, display: display, requestedKbps: kbps,

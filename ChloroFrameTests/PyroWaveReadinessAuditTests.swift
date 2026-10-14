@@ -318,6 +318,26 @@ final class PyroWaveReadinessAuditTests: XCTestCase {
         XCTAssertTrue(r.detail!.contains("HDR was requested"))
     }
 
+    func testC14ReportsTheProfileActuallyUsed() {
+        var i = good()
+        i.hostCodecModeSupport = ServerInfo.scmPyroWave | ServerInfo.scmPyroWave444
+        i.userWants444 = true
+        var r = row("C14", i)
+        XCTAssertTrue(r.detail!.contains("Will use: 4:4:4 8-bit."))
+        XCTAssertFalse(r.detail!.contains("not supported"))
+
+        i.userWants444 = false
+        r = row("C14", i)
+        XCTAssertTrue(r.detail!.contains("Will use: 4:2:0 8-bit."))
+
+        i.userWants444 = true
+        i.hostCodecModeSupport = ServerInfo.scmPyroWave
+        r = row("C14", i)
+        XCTAssertEqual(r.outcome, .pass)
+        XCTAssertTrue(r.detail!.contains("Will use: 4:2:0 8-bit."))
+        XCTAssertTrue(r.detail!.contains("host does not offer it"))
+    }
+
     func testC15DecodeSpeedBands() {
         var i = good()
         i.gpuDecodeMs = 1.9

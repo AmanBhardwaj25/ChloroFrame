@@ -42,6 +42,7 @@ struct HostConnectionView: View {
 
     @AppStorage("preferredCodec")            private var preferredCodec      = "h264"
     @AppStorage("enableHDR")                 private var enableHDR           = false
+    @AppStorage("pyroWave444")               private var pyroWave444         = false
     // Stream overrides — empty/0 means "auto-detect from display"
     @AppStorage("streamOverrideResolution")  private var overrideResolution  = ""   // "WxH" or ""
     @AppStorage("streamOverrideFPS")         private var overrideFPS         = 0
@@ -287,7 +288,7 @@ struct HostConnectionView: View {
                 .help("Runs the PyroWave readiness checks for this host and shows every result, even when PyroWave is not the selected codec.")
                 if pyroWaveChecking { ProgressView().controlSize(.small) }
                 Button("Test network") {
-                    Task { await runNetworkTest() }
+                    Task { await runNetworkTest(serverInfo: info) }
                 }
                 .disabled(networkTesting || pyroWaveChecking)
                 .help("Sends about 3 seconds of test traffic from the host at the PyroWave bitrate and grades loss and jitter on this path. The host refuses while a stream is running.")
@@ -467,8 +468,8 @@ struct HostConnectionView: View {
         let display = buildDisplayConfig(base: DisplayConfig.detect())
         let report = await PyroWaveAuditRunner.run(
             client: client, serverInfo: serverInfo, display: display,
-            requestedKbps: pyroWaveRequestedKbps(display: display),
-            userWantsHDR: enableHDR, reason: "launch"
+            requestedKbps: pyroWaveRequestedKbps(display: display, serverInfo: serverInfo),
+            userWantsHDR: enableHDR, userWants444: pyroWave444, reason: "launch"
         )
         if report.blocked {
             pyroWaveFallbackReport = report
@@ -488,10 +489,18 @@ struct HostConnectionView: View {
 
     // The total bitrate a PyroWave launch will request: the user's override, else the PyroWave
     // default. Mirrors the codec == .pyrowave branch of performLaunch.
-    private func pyroWaveRequestedKbps(display: DisplayConfig) -> Int {
+    private func pyroWaveRequestedKbps(display: DisplayConfig, serverInfo: ServerInfo) -> Int {
         overrideBitrate > 0
             ? overrideBitrate
-            : PyroWaveBitrate.defaultKbps(width: display.width, height: display.height, fps: display.fps)
+            : PyroWaveBitrate.defaultKbps(width: display.width, height: display.height, fps: display.fps,
+                                          yuv444: pyroWaveUses444(serverInfo: serverInfo))
+    }
+
+    // The chroma profile this launch will use: 4:4:4 only when the toggle is on and the host
+    // advertises it (D8).
+    private func pyroWaveUses444(serverInfo: ServerInfo) -> Bool {
+        PyroWaveNegotiation.chooseChroma(userWants444: pyroWave444,
+                                         hostSupports444: serverInfo.supportsPyroWave444).use444
     }
 
     private func checkPyroWaveReadiness(serverInfo: ServerInfo) async {
@@ -500,18 +509,18 @@ struct HostConnectionView: View {
         let display = buildDisplayConfig(base: DisplayConfig.detect())
         pyroWaveCheckReport = await PyroWaveAuditRunner.run(
             client: client, serverInfo: serverInfo, display: display,
-            requestedKbps: pyroWaveRequestedKbps(display: display),
-            userWantsHDR: enableHDR, forceRefresh: true, reason: "button"
+            requestedKbps: pyroWaveRequestedKbps(display: display, serverInfo: serverInfo),
+            userWantsHDR: enableHDR, userWants444: pyroWave444, forceRefresh: true, reason: "button"
         )
     }
 
-    private func runNetworkTest() async {
+    private func runNetworkTest(serverInfo: ServerInfo) async {
         networkTesting = true
         defer { networkTesting = false }
         let display = buildDisplayConfig(base: DisplayConfig.detect())
         networkTestResult = await PyroWaveNetworkTest.run(
             client: client, display: display,
-            requestedKbps: pyroWaveRequestedKbps(display: display), reason: "button")
+            requestedKbps: pyroWaveRequestedKbps(display: display, serverInfo: serverInfo), reason: "button")
     }
 
     private func performLaunch(app: SunshineApp, serverInfo: ServerInfo, pyroWave: PyroWaveLaunchChoice) async {
@@ -558,6 +567,16 @@ struct HostConnectionView: View {
         // the fallback an RTSP downgrade to HEVC restores.
         var streamDisplay = display
         var fallbackBitrate: Int? = nil
+        // D8: 4:4:4 only for a PyroWave stream, only when the host advertises it.
+        let chroma = PyroWaveNegotiation.chooseChroma(userWants444: pyroWave444,
+                                                      hostSupports444: serverInfo.supportsPyroWave444)
+        let use444 = codec == .pyrowave && chroma.use444
+        #if DEBUG
+        if codec == .pyrowave {
+            DebugFileLog.write("[ChloroFrame][launch] pyrowave userWants444=\(pyroWave444) hostOffers444=\(serverInfo.supportsPyroWave444) chroma=\(use444 ? "4:4:4" : "4:2:0")"
+                             + (chroma.fallbackReason.map { " (\($0))" } ?? ""))
+        }
+        #endif
         if codec == .pyrowave {
             // A stored custom bitrate above the non-PyroWave cap (500 Mbps) is only valid for
             // PyroWave; sending it to HEVC makes the host's NVENC reject the session. Fall back
@@ -569,7 +588,7 @@ struct HostConnectionView: View {
                 streamDisplay = DisplayConfig(
                     width: display.width, height: display.height, fps: display.fps, hdr: display.hdr,
                     bitrateOverride: PyroWaveBitrate.defaultKbps(
-                        width: display.width, height: display.height, fps: display.fps
+                        width: display.width, height: display.height, fps: display.fps, yuv444: use444
                     )
                 )
             }
@@ -580,7 +599,7 @@ struct HostConnectionView: View {
             // Do NOT use a SwiftUI .task for this — the view scheduling delay (~2s) causes
             // Sunshine's RTSP session to time out before we send SETUP.
             phase = .negotiating(app, result)
-            await negotiate(app: app, result: result, display: streamDisplay, codec: codec, hdr: enableHdr, fallbackBitrateKbps: fallbackBitrate)
+            await negotiate(app: app, result: result, display: streamDisplay, codec: codec, hdr: enableHdr, yuv444: use444, fallbackBitrateKbps: fallbackBitrate)
         } catch {
             #if DEBUG
             if isAppAlreadyRunning(error), PyroWaveExperimentRunner.shared.consumeRetry() {
@@ -606,7 +625,7 @@ struct HostConnectionView: View {
         await connect()
     }
 
-    private func negotiate(app: SunshineApp, result: SunshineHTTPClient.LaunchResult, display: DisplayConfig, codec: VideoCodec, hdr enableHdr: Bool, fallbackBitrateKbps: Int? = nil) async {
+    private func negotiate(app: SunshineApp, result: SunshineHTTPClient.LaunchResult, display: DisplayConfig, codec: VideoCodec, hdr enableHdr: Bool, yuv444: Bool = false, fallbackBitrateKbps: Int? = nil) async {
         guard let sessionURL = URL(string: result.sessionUrl) else {
             phase = .failed(RTSPError.badURL); return
         }
@@ -617,6 +636,7 @@ struct HostConnectionView: View {
             bitrate: display.bitrate,
             codec:   codec,
             hdr:     enableHdr,
+            yuv444:  yuv444,
             fallbackBitrateKbps: fallbackBitrateKbps
         )
         AppLogger.shared.log(

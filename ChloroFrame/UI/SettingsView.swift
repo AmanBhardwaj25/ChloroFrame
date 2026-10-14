@@ -17,6 +17,7 @@ struct SettingsView: View {
     // RealTime mode). Commented out rather than deleted in case we wire it up later.
     // @AppStorage("lowLatencyMode") private var lowLatencyMode = true
     @AppStorage("enableHDR") private var enableHDR = false
+    @AppStorage("pyroWave444") private var pyroWave444 = false
     @AppStorage("useSwiftFEC") private var useSwiftFEC = false
     @AppStorage("useAppleAudioDecoder") private var useAppleAudioDecoder = false
     @AppStorage("preferSmootherAudio") private var preferSmootherAudio = false
@@ -85,6 +86,11 @@ struct SettingsView: View {
                 .buttonStyle(.plain)
                 .foregroundStyle(.secondary)
                 .help("About PyroWave and what ChloroFrame checks before using it")
+                }
+
+                if preferredCodec == "pyrowave" {
+                    Toggle("4:4:4 chroma (PyroWave)", isOn: $pyroWave444)
+                        .help("Full-resolution color for text and fine edges, at about 15% more bandwidth. Used only when the host offers it; otherwise the stream stays 4:2:0. Takes effect on the next connect.")
                 }
 
                 // Toggle("Hardware Acceleration", isOn: $hardwareAcceleration)
