@@ -23,10 +23,8 @@ extern "C" {
 #include <stdbool.h>
 #endif
 
-// API and ABI is not considered stable until MAJOR version hits 1!
-
-#define PYROWAVE_API_VERSION_MAJOR 0
-#define PYROWAVE_API_VERSION_MINOR 5
+#define PYROWAVE_API_VERSION_MAJOR 1
+#define PYROWAVE_API_VERSION_MINOR 0
 #define PYROWAVE_API_VERSION_PATCH 0
 
 #if !defined(PYROWAVE_PUBLIC_API)
@@ -117,6 +115,14 @@ pyrowave_device_create(const pyrowave_device_create_info *info, pyrowave_device 
 PYROWAVE_PUBLIC_API void
 pyrowave_device_destroy(pyrowave_device device);
 
+// For performance debugging, reports GPU timestamps, then Metal's memory counters.
+// Timestamps are per pass rather than per dispatch, since Apple GPUs only sample
+// the counter at pass boundaries. Collection is off until PYROWAVE_TIMESTAMPS is
+// set or this is called once, so the first call may have nothing to report yet.
+// cb may be NULL, in which case the device's message callback is used.
+PYROWAVE_PUBLIC_API void
+pyrowave_device_report_performance_stats(pyrowave_device device, pyrowave_message_cb cb, void *userdata, bool reset);
+
 // Encoder API
 typedef struct pyrowave_encoder_create_info
 {
@@ -188,14 +194,14 @@ pyrowave_encoder_destroy(pyrowave_encoder encoder);
 // the previous frame's result. The bitstream carries a small sequence counter so
 // the decoder can track frame ordering.
 PYROWAVE_PUBLIC_API pyrowave_result
-pyrowave_encoder_encode_gpu_synchronous(pyrowave_encoder encoder,
-                                        const pyrowave_gpu_input *input,
-                                        const pyrowave_rate_control *rate_control);
+pyrowave_encoder_encode_gpu(pyrowave_encoder encoder,
+                            const pyrowave_gpu_input *input,
+                            const pyrowave_rate_control *rate_control);
 
 PYROWAVE_PUBLIC_API pyrowave_result
-pyrowave_encoder_encode_cpu_synchronous(pyrowave_encoder encoder,
-                                        const pyrowave_cpu_buffer *input,
-                                        const pyrowave_rate_control *rate_control);
+pyrowave_encoder_encode_cpu(pyrowave_encoder encoder,
+                            const pyrowave_cpu_buffer *input,
+                            const pyrowave_rate_control *rate_control);
 
 // Only valid after a successful encode, and only for that frame. Reports how many
 // packets the frame needs if each may carry at most packet_boundary bytes.

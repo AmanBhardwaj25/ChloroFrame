@@ -66,12 +66,12 @@ nonisolated final class PyroWaveEncoder: @unchecked Sendable {
                     input.format = chroma444 ? PYROWAVE_CPU_BUFFER_FORMAT_YUV444P
                                              : PYROWAVE_CPU_BUFFER_FORMAT_YUV420P
                     var rate = pyrowave_rate_control(maximum_bitstream_size: maximumBitstreamSize)
-                    return pyrowave_encoder_encode_cpu_synchronous(handle, &input, &rate)
+                    return pyrowave_encoder_encode_cpu(handle, &input, &rate)
                 }
             }
         }
         guard encodeResult == PYROWAVE_SUCCESS else {
-            throw PyroWaveError.failed("pyrowave_encoder_encode_cpu_synchronous", code: encodeResult.rawValue)
+            throw PyroWaveError.failed("pyrowave_encoder_encode_cpu", code: encodeResult.rawValue)
         }
 
         var packetCount = 0

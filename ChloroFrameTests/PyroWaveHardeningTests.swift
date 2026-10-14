@@ -267,6 +267,11 @@ final class PyroWaveHardeningTests: XCTestCase {
         let device = try XCTUnwrap(MTLCreateSystemDefaultDevice())
         try XCTSkipUnless(VideoCapabilities.supportsPyroWave, "PyroWave needs an Apple7+ GPU")
         let format = PyroWaveStreamFormat(width: 320, height: 180, chroma444: false, bitDepth: 8)
+        // One-time lazy setup (shared device, shader library, first command queue) opens a few
+        // descriptors that stay open for the process. Do it before measuring so only per-cycle
+        // growth counts.
+        _ = try PyroWaveDevice.shared(for: device)
+        _ = try PyroWaveDecoder(device: device, format: format, storageMode: .shared)
         let fdsBefore = openFileDescriptors()
         weak var weakReceiver: RTPVideoReceiver?
 

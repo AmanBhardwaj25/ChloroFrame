@@ -839,7 +839,10 @@ pyrowave_result encode_frame(pyrowave_encoder encoder, id<MTLTexture> const plan
 		return PYROWAVE_ERROR_GENERIC;
 	cmd.label = @("pyrowave encode");
 
-	auto blit = [cmd blitCommandEncoder];
+	// Per pass timestamps, null unless collection is on.
+	auto batch = encoder->device->timestamps->begin_batch();
+
+	auto blit = begin_blit_pass(cmd, batch.get(), "encode clear");
 	if (!blit)
 		return PYROWAVE_ERROR_GENERIC;
 	// Accumulated into, so they have to start from zero. The rest of the payload buffer
@@ -864,8 +867,9 @@ pyrowave_result encode_frame(pyrowave_encoder encoder, id<MTLTexture> const plan
 	// the Vulkan encoder has them. Everything between two barriers is independent -- each
 	// dispatch owns a distinct (component, level, band) region -- and a serial encoder
 	// would barrier between all ~170.
-	id<MTLComputeCommandEncoder> enc = [cmd computeCommandEncoderWithDispatchType:
-			bench_serial_dispatch() ? MTLDispatchTypeSerial : MTLDispatchTypeConcurrent];
+	id<MTLComputeCommandEncoder> enc = begin_compute_pass(
+			cmd, bench_serial_dispatch() ? MTLDispatchTypeSerial : MTLDispatchTypeConcurrent,
+			batch.get(), "encode compute");
 	if (!enc)
 		return PYROWAVE_ERROR_GENERIC;
 	enc.label = @("pyrowave encode");
@@ -884,6 +888,23 @@ pyrowave_result encode_frame(pyrowave_encoder encoder, id<MTLTexture> const plan
 	dispatch_block_packing(encoder, enc);
 
 	[enc endEncoding];
+
+	if (batch)
+		batch->submit(cmd);
+
+	// Whole command buffer timing. Unlike the pass breakdown it needs no counter
+	// support, and this buffer is ours alone, so nothing foreign is counted.
+	if (encoder->device->timestamps->collecting())
+	{
+		auto timestamps = encoder->device->timestamps;
+		[cmd addCompletedHandler:^(id<MTLCommandBuffer> completed) {
+			// Both are zero if the command buffer never ran.
+			const double seconds = completed.GPUEndTime - completed.GPUStartTime;
+			if (seconds > 0.0)
+				timestamps->accumulate("encode command buffer", seconds);
+		}];
+	}
+
 	[cmd commit];
 
 	encoder->pending = cmd;
@@ -1145,9 +1166,9 @@ void pyrowave_encoder_destroy(pyrowave_encoder encoder)
 	delete encoder;
 }
 
-pyrowave_result pyrowave_encoder_encode_gpu_synchronous(pyrowave_encoder encoder,
-                                                        const pyrowave_gpu_input *input,
-                                                        const pyrowave_rate_control *rate_control)
+pyrowave_result pyrowave_encoder_encode_gpu(pyrowave_encoder encoder,
+                                            const pyrowave_gpu_input *input,
+                                            const pyrowave_rate_control *rate_control)
 {
 	if (!encoder || !input || !rate_control)
 		return PYROWAVE_ERROR_INVALID_ARGUMENT;
@@ -1163,9 +1184,9 @@ pyrowave_result pyrowave_encoder_encode_gpu_synchronous(pyrowave_encoder encoder
 	return encode_frame(encoder, wrapped.sampled, rate_control);
 }
 
-pyrowave_result pyrowave_encoder_encode_cpu_synchronous(pyrowave_encoder encoder,
-                                                        const pyrowave_cpu_buffer *input,
-                                                        const pyrowave_rate_control *rate_control)
+pyrowave_result pyrowave_encoder_encode_cpu(pyrowave_encoder encoder,
+                                            const pyrowave_cpu_buffer *input,
+                                            const pyrowave_rate_control *rate_control)
 {
 	if (!encoder || !input || !rate_control)
 		return PYROWAVE_ERROR_INVALID_ARGUMENT;

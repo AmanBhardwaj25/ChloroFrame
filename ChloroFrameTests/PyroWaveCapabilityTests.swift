@@ -8,10 +8,10 @@ import XCTest
 
 final class PyroWaveCapabilityTests: XCTestCase {
 
-    func testVendoredAPIVersionIs050() {
+    func testVendoredAPIVersionIs100() {
         let v = PyroWaveVendor.apiVersion()
-        XCTAssertEqual(v.major, 0)
-        XCTAssertEqual(v.minor, 5)
+        XCTAssertEqual(v.major, 1)
+        XCTAssertEqual(v.minor, 0)
         XCTAssertEqual(v.patch, 0)
     }
 
