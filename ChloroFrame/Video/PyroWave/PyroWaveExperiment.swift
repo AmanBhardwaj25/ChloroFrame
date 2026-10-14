@@ -177,7 +177,44 @@ nonisolated struct PartialDiagnostics: Equatable {
     var lateMaxMs = 0.0
     var lateUnder1 = 0, lateUnder2 = 0, lateUnder5 = 0, lateUnder20 = 0, lateOver20 = 0
 
+    // DEBUG builds only (the queue does not call these in Release).
+    // Packets that arrived after their frame had been DROPPED, and how late.
+    var lateDroppedCount = 0
+    var lateDroppedSumMs = 0.0
+    var lateDroppedMaxMs = 0.0
+    var lateDroppedUnder5 = 0, lateDroppedUnder20 = 0, lateDroppedUnder100 = 0, lateDroppedOver100 = 0
+    // Largest silence between two packets of the same frame, for each frame that was dropped or
+    // delivered partially: how long the stall inside the frame was.
+    var gapFrames = 0
+    var gapMaxMs = 0.0
+    var gapUnder2 = 0, gapUnder5 = 0, gapUnder10 = 0, gapUnder20 = 0, gapUnder50 = 0, gapOver50 = 0
+
     var totalDrops: Int { dropFirstPacket + dropWholeBlock + dropCritical + dropIneligible }
+
+    mutating func addLateDropped(ms: Double) {
+        lateDroppedCount += 1
+        lateDroppedSumMs += ms
+        lateDroppedMaxMs = max(lateDroppedMaxMs, ms)
+        switch ms {
+        case ..<5: lateDroppedUnder5 += 1
+        case ..<20: lateDroppedUnder20 += 1
+        case ..<100: lateDroppedUnder100 += 1
+        default: lateDroppedOver100 += 1
+        }
+    }
+
+    mutating func addFrameGap(ms: Double) {
+        gapFrames += 1
+        gapMaxMs = max(gapMaxMs, ms)
+        switch ms {
+        case ..<2: gapUnder2 += 1
+        case ..<5: gapUnder5 += 1
+        case ..<10: gapUnder10 += 1
+        case ..<20: gapUnder20 += 1
+        case ..<50: gapUnder50 += 1
+        default: gapOver50 += 1
+        }
+    }
 
     mutating func addLate(ms: Double) {
         lateCount += 1
@@ -257,6 +294,25 @@ nonisolated enum PyroWaveExperimentReport {
                           d.lateOver20 - d0.lateOver20)
         } else {
             out += "late packets 0 after a partial delivery\n"
+        }
+        let lateDropped = d.lateDroppedCount - d0.lateDroppedCount
+        if lateDropped > 0 {
+            out += String(format: "late dropped %d packets arrived after their frame was DROPPED: mean %.1f ms, max %.1f ms; "
+                          + "<5 ms %d, <20 %d, <100 %d, >=100 %d\n",
+                          lateDropped, (d.lateDroppedSumMs - d0.lateDroppedSumMs) / Double(lateDropped),
+                          d.lateDroppedMaxMs,
+                          d.lateDroppedUnder5 - d0.lateDroppedUnder5, d.lateDroppedUnder20 - d0.lateDroppedUnder20,
+                          d.lateDroppedUnder100 - d0.lateDroppedUnder100, d.lateDroppedOver100 - d0.lateDroppedOver100)
+        } else if d.lateDroppedCount > 0 || d.gapFrames > 0 {
+            out += "late dropped 0 packets arrived after their frame was dropped\n"
+        }
+        let gaps = d.gapFrames - d0.gapFrames
+        if gaps > 0 {
+            out += String(format: "stall        largest gap inside %d affected frames (max %.1f ms): "
+                          + "<2 ms %d, <5 %d, <10 %d, <20 %d, <50 %d, >=50 %d\n",
+                          gaps, d.gapMaxMs,
+                          d.gapUnder2 - d0.gapUnder2, d.gapUnder5 - d0.gapUnder5, d.gapUnder10 - d0.gapUnder10,
+                          d.gapUnder20 - d0.gapUnder20, d.gapUnder50 - d0.gapUnder50, d.gapOver50 - d0.gapOver50)
         }
         let injected = b.injectedDrops - a.injectedDrops
         if r.lossPercent > 0 {

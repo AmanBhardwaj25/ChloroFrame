@@ -447,6 +447,45 @@ final class PyroWavePartialDeliveryTests: XCTestCase {
         XCTAssertEqual(d.lateMaxMs, 28, accuracy: 0.01)
     }
 
+
+    #if DEBUG
+    // These counters exist only in DEBUG builds (they are compiled out of Release).
+    func testPacketsArrivingAfterADroppedFrameAreCountedWithTheirDelay() {
+        let h = harness()
+        let f = synthFrame(index: 1, blocks: [10, 30], critical: 4)
+        let all = datagrams(f, seqStart: 0).packets
+        let sent = datagrams(f, seqStart: 0, drop: [2])          // critical packet missing
+        feed(sent.packets, into: h)
+        // Frame 1 is dropped when block 1 starts (critical packet 2 is missing), at clock 100.
+        XCTAssertEqual(h.sink.lost, [1])
+        h.clock.now = 100.060                                     // 60 ms after the drop
+        feed([all[2]], into: h)                                   // the skipped critical packet
+        feed([all[20]], into: h)                                  // rest of the dropped frame: not late
+        let d = h.stats.experimentSnapshot().diagnostics
+        XCTAssertEqual(d.lateDroppedCount, 1, "only the packet that had been skipped over is late")
+        XCTAssertEqual(d.lateDroppedUnder100, 1)
+        XCTAssertEqual(d.lateDroppedMaxMs, 60, accuracy: 0.01)
+    }
+
+    func testLargestStallInsideAnAffectedFrameIsRecorded() {
+        let h = harness()
+        let f = synthFrame(index: 1, blocks: [10, 30], critical: 4)
+        let packets = datagrams(f, seqStart: 0, drop: [25]).packets
+        for (i, p) in packets.enumerated() {
+            if i == 20 { h.clock.now += 0.012 }                  // 12 ms silence mid frame
+            else { h.clock.now += 0.0001 }
+            feed([p], into: h)
+        }
+        h.clock.now = 101
+        XCTAssertTrue(h.queue.expirePending())
+        let d = h.stats.experimentSnapshot().diagnostics
+        XCTAssertEqual(d.gapFrames, 1)
+        XCTAssertEqual(d.gapUnder20, 1)
+        XCTAssertGreaterThan(d.gapMaxMs, 11.9)
+        XCTAssertLessThan(d.gapMaxMs, 12.1)
+    }
+    #endif
+
     // MARK: - Parser with a loss map
 
     private typealias Parser = PyroWaveRecordParser

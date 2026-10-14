@@ -185,6 +185,15 @@ final class RtpVideoQueue {
     // counted and timed (diagnostics only).
     private var lastPartialFrame: UInt32?
     private var lastPartialDeliveredAt = 0.0
+    #if DEBUG
+    // DEBUG diagnostics only, compiled out of Release: recently dropped frames (to time packets
+    // that show up for them afterwards) and the largest silence inside the current frame.
+    private var recentDropped: [(frame: UInt32, at: Double, highestSeq: UInt16)] = []
+    private var debugHighestSeq: UInt16 = 0
+    private var gapFrame: UInt32?
+    private var gapLastPacketAt = 0.0
+    private var gapMax = 0.0
+    #endif
 
     private var packetLogCount = 0
     private var blockLogCount = 0
@@ -242,6 +251,14 @@ final class RtpVideoQueue {
             if partialDelivery, frameIndex == lastPartialFrame {
                 stats?.recordLatePacket(ms: (clock() - lastPartialDeliveredAt) * 1000)
             }
+            #if DEBUG
+            // Only packets that were skipped over when the frame was dropped are "late". The rest of
+            // a frame that is still streaming in after an early drop is not.
+            if partialDelivery, let hit = recentDropped.first(where: { $0.frame == frameIndex }),
+               isBefore16(seqNum, hit.highestSeq) {
+                stats?.recordLateDroppedPacket(ms: (clock() - hit.at) * 1000)
+            }
+            #endif
             return reject("old frame frame=\(frameIndex) current=\(currentFrameNumber) seq=\(seqNum)")
         }
 
@@ -267,7 +284,8 @@ final class RtpVideoQueue {
                         if partialDelivery {
                             // A later block that never started is a whole missing block.
                             notePartialDrop(multiFecCurrentBlock != multiFecLastBlock
-                                            ? .wholeBlock : (partialBlocker() ?? .ineligible))
+                                            ? .wholeBlock : (partialBlocker() ?? .ineligible),
+                                            frame: currentFrameNumber)
                         }
                         if !reportedLostFrame {
                             onFrameLost?(currentFrameNumber)
@@ -287,7 +305,8 @@ final class RtpVideoQueue {
                     // Same frame, different FEC block — we missed a block; can't recover.
                     if partialDelivery {
                         notePartialDrop(fecBlock == multiFecCurrentBlock &+ 1
-                                        ? (partialBlocker() ?? .ineligible) : .wholeBlock)
+                                        ? (partialBlocker() ?? .ineligible) : .wholeBlock,
+                                        frame: currentFrameNumber)
                     }
                     if !reportedLostFrame {
                         onFrameLost?(currentFrameNumber)
@@ -304,7 +323,7 @@ final class RtpVideoQueue {
                 // Old frame ended cleanly but we skipped some frames. A PyroWave frame that was
                 // abandoned between blocks (a whole block never arrived) is a lost frame.
                 if partialDelivery, frameAssemblyPackets > 0 {
-                    notePartialDrop(.wholeBlock)
+                    notePartialDrop(.wholeBlock, frame: currentFrameNumber)
                     onFrameLost?(currentFrameNumber)
                     stats?.recordFrameLost()
                 }
@@ -317,7 +336,7 @@ final class RtpVideoQueue {
                 let expectedBlock: UInt8 = frameIndex == currentFrameNumber && frameAssemblyPackets > 0
                     ? multiFecCurrentBlock : 0
                 if fecBlock != expectedBlock {
-                    notePartialDrop(expectedBlock == 0 ? .firstPacket : .wholeBlock)
+                    notePartialDrop(expectedBlock == 0 ? .firstPacket : .wholeBlock, frame: frameIndex)
                     if !(frameIndex == currentFrameNumber && reportedLostFrame) {
                         onFrameLost?(frameIndex)
                         stats?.recordFrameLost()
@@ -368,6 +387,20 @@ final class RtpVideoQueue {
         if slotUsed[idx] {
             return reject("duplicate seq=\(seqNum) idx=\(idx) frame=\(frameIndex)")
         }
+
+        #if DEBUG
+        if partialDelivery {
+            let now = clock()
+            if gapFrame != frameIndex {
+                gapFrame = frameIndex
+                gapMax = 0
+            } else {
+                gapMax = max(gapMax, now - gapLastPacketAt)
+            }
+            gapLastPacketAt = now
+            if isBefore16(debugHighestSeq, seqNum) { debugHighestSeq = seqNum }
+        }
+        #endif
 
         // ── Store the packet (copy into the reusable slot row, zero-pad to blockSize) ──
         let copyLen = min(datagram.count, blockSize)
@@ -657,8 +690,14 @@ final class RtpVideoQueue {
 
     private typealias PartialDropReasonLocal = StreamStatsCollector.PartialDropReason
 
-    private func notePartialDrop(_ reason: PartialDropReasonLocal) {
-        if partialDelivery { stats?.recordPartialDrop(reason) }
+    private func notePartialDrop(_ reason: PartialDropReasonLocal, frame: UInt32) {
+        guard partialDelivery else { return }
+        stats?.recordPartialDrop(reason)
+        #if DEBUG
+        recentDropped.append((frame, clock(), debugHighestSeq))
+        if recentDropped.count > 8 { recentDropped.removeFirst() }
+        if gapFrame == frame { stats?.recordFrameGap(ms: gapMax * 1000) }
+        #endif
     }
 
     /// The final block is incomplete and its frame is ending: stage it with zeros and emit the
@@ -717,6 +756,9 @@ final class RtpVideoQueue {
             meta.lossMap = PyroWaveLossMap(payloadStarts: payloadStarts, lost: payloadLost,
                                            recordStart: payloadRecordStart)
             stats?.recordFramePartial(lostPackets: payloadLostCount)
+            #if DEBUG
+            if gapFrame == currentFrameNumber { stats?.recordFrameGap(ms: gapMax * 1000) }
+            #endif
         }
         frameAssembly.withUnsafeBufferPointer { buf in
             onFrameAssembled?(frame, buf, ts, meta)

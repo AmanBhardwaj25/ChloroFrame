@@ -270,6 +270,14 @@ final class StreamStatsCollector {
             else { acc.partialDiagnostics.releasedAtBoundary += 1 }
         }
     }
+    /// DEBUG diagnostics: a packet for a frame that had been dropped, and the stall inside an
+    /// affected frame. Only called from `#if DEBUG` code in the queue.
+    func recordLateDroppedPacket(ms: Double) {
+        lock.withLock { acc.partialDiagnostics.addLateDropped(ms: ms) }
+    }
+    func recordFrameGap(ms: Double) {
+        lock.withLock { acc.partialDiagnostics.addFrameGap(ms: ms) }
+    }
     func recordLatePacket(ms: Double) {
         lock.withLock { acc.partialDiagnostics.addLate(ms: ms) }
     }
