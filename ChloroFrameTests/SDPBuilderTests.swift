@@ -101,4 +101,70 @@ final class SDPBuilderTests: XCTestCase {
         )
         XCTAssertEqual(originLine(in: sdp), "o=android 0 14 IN IPv6 [fd7a:115c:a1e0::1]")
     }
+
+    // MARK: - PyroWave (D5)
+
+    private func pyroWaveConfig(yuv444: Bool = false, hdr: Bool = false) -> StreamConfig {
+        var c = StreamConfig()
+        c.codec = .pyrowave
+        c.bitrate = 220_000
+        c.yuv444 = yuv444
+        c.hdr = hdr
+        return c
+    }
+
+    func testPyroWaveAnnounceAttributes() {
+        let sdp = SDPBuilder.buildAnnounceSDP(
+            serverHost: "192.168.1.50", videoLocalPort: 47998, config: pyroWaveConfig(),
+            networkClass: .local, videoPacketSize: 1392
+        )
+        XCTAssertEqual(attribute("x-nv-vqos[0].bitStreamFormat", in: sdp), "3")
+        XCTAssertEqual(attribute("x-ss-video[0].chromaSamplingType", in: sdp), "0")
+        XCTAssertEqual(attribute("x-nv-video[0].dynamicRangeMode", in: sdp), "0")
+        XCTAssertEqual(attribute("x-nv-video[0].encoderCscMode", in: sdp), "2")
+        XCTAssertEqual(attribute("x-ss-video[0].pyrowaveAdaptiveFec", in: sdp), "0")
+        XCTAssertEqual(attribute("x-ss-video[0].pyrowaveAdaptiveBitrate", in: sdp), "0")
+        XCTAssertEqual(attribute("x-ss-video[0].pyrowaveFeatures", in: sdp), "1")
+        // The host sizes the encoder from the unadjusted configured bitrate.
+        XCTAssertEqual(attribute("x-ml-video.configuredBitrateKbps", in: sdp), "220000")
+        // The host answers 400 to a nonzero hybrid or compression request, so never send them.
+        XCTAssertFalse(sdp.contains("pyrowaveHybrid"))
+        XCTAssertFalse(sdp.contains("pyrowaveCompression"))
+    }
+
+    func testPyroWave444SetsChromaSamplingType() {
+        let sdp = SDPBuilder.buildAnnounceSDP(
+            serverHost: "192.168.1.50", videoLocalPort: 47998, config: pyroWaveConfig(yuv444: true),
+            networkClass: .local, videoPacketSize: 1392
+        )
+        XCTAssertEqual(attribute("x-ss-video[0].chromaSamplingType", in: sdp), "1")
+    }
+
+    func testYuv444IsIgnoredForOtherCodecs() {
+        for codec in [VideoCodec.h264, .hevc, .av1] {
+            var c = StreamConfig()
+            c.codec = codec
+            c.yuv444 = true
+            let sdp = SDPBuilder.buildAnnounceSDP(
+                serverHost: "192.168.1.50", videoLocalPort: 47998, config: c,
+                networkClass: .local, videoPacketSize: 1392
+            )
+            XCTAssertEqual(attribute("x-ss-video[0].chromaSamplingType", in: sdp), "0")
+            XCTAssertEqual(attribute("x-nv-video[0].encoderCscMode", in: sdp), "0")
+            XCTAssertFalse(sdp.contains("pyrowave"))
+        }
+    }
+
+    func testOtherCodecsKeepTheirBitStreamFormat() {
+        let expected: [(VideoCodec, String)] = [(.h264, "0"), (.hevc, "1"), (.av1, "2")]
+        for (codec, value) in expected {
+            var c = StreamConfig()
+            c.codec = codec
+            let sdp = SDPBuilder.buildAnnounceSDP(
+                serverHost: "192.168.1.50", videoLocalPort: 47998, config: c,
+                networkClass: .local, videoPacketSize: 1392
+            )
+            XCTAssertEqual(attribute("x-nv-vqos[0].bitStreamFormat", in: sdp), value)
+        }
+    }
 }

@@ -41,14 +41,24 @@ struct SettingsView: View {
                          : "AV1 (not supported on this device)")
                         .tag("av1")
                         .disabled(!VideoCapabilities.supportsAV1Hardware)
+                    // PyroWave decodes on the GPU, so any Apple silicon Mac qualifies. Greyed out
+                    // otherwise, like AV1.
+                    Text(VideoCapabilities.supportsPyroWave
+                         ? "PyroWave (Experimental)"
+                         : "PyroWave (Experimental, requires Apple silicon)")
+                        .tag("pyrowave")
+                        .disabled(!VideoCapabilities.supportsPyroWave)
                 }
-                .help("H.264 is broadly supported; H.265 is better quality at lower bitrates but requires HEVC decoding support; AV1 is the most efficient but requires a recent Apple silicon hardware AV1 decoder")
+                .help("H.264 is broadly supported; H.265 is better quality at lower bitrates but requires HEVC decoding support; AV1 is the most efficient but requires a recent Apple silicon hardware AV1 decoder; PyroWave is experimental, needs a Vibeshine host on Ethernet and this Mac on Ethernet or 5 GHz+ Wi-Fi")
                 .onAppear {
                     // Normalize a stale stored preference: if AV1 was selected on a
                     // device that supports it and the user later moves to one that
                     // doesn't, fall back to HEVC so the picker can't show a disabled
                     // row as the active selection.
                     if preferredCodec == "av1" && !VideoCapabilities.supportsAV1Hardware {
+                        preferredCodec = "h265"
+                    }
+                    if preferredCodec == "pyrowave" && !VideoCapabilities.supportsPyroWave {
                         preferredCodec = "h265"
                     }
                 }

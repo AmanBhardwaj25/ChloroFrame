@@ -19,7 +19,7 @@ private func rtspLogBlock(_ header: String, body: String, step: String) {
 // nonisolated: pure value data, needed from RouteResolver/SDPBuilder's nonisolated context and
 // from unit tests, not just MainActor code. See the same note on Host in ContentView.swift.
 nonisolated enum VideoCodec {
-    case h264, hevc, av1
+    case h264, hevc, av1, pyrowave
 }
 
 /// Everything the RTP receiver needs after a successful RTSP handshake.
@@ -49,6 +49,11 @@ struct StreamDescriptor {
     // (a future HUD line); defaults to .local when route resolution failed, matching
     // PacketSizePolicy's own fail-open default.
     let networkClass:        StreamNetworkClass
+    // PyroWave only (false for every other codec). `chroma444` is the negotiated chroma
+    // format; `pyroWaveBitstreamMismatch` means the host's advertised PyroWave bitstream id
+    // differs from the vendored decoder's (decision Q2: warn and continue, shown in the HUD).
+    var chroma444:                 Bool = false
+    var pyroWaveBitstreamMismatch: Bool = false
 }
 
 enum RTSPError: LocalizedError {
@@ -79,6 +84,10 @@ nonisolated struct StreamConfig {
     var bitrate: Int    = 10000   // kbps, total including FEC headroom
     var codec:   VideoCodec = .h264
     var hdr:     Bool   = false   // HDR10 (PQ + BT.2020 + P010); requires HEVC
+    var yuv444:  Bool   = false   // PyroWave 4:4:4 only (D8); ignored by every other codec
+    // Bitrate to use if a PyroWave request is downgraded to HEVC during negotiation (PyroWave's
+    // default is far above what HEVC should be sent). Read only by that downgrade path.
+    var fallbackBitrateKbps: Int? = nil
 }
 
 // MARK: - RTSPClient
@@ -157,6 +166,22 @@ final class RTSPClient {
             if advertised != .av1 {
                 effectiveConfig.codec = .hevc
                 rtspLog("server did not advertise AV1 — downgrading request to hevc", step: "DESCRIBE")
+            }
+        }
+        // PyroWave: downgrade to HEVC when the host does not advertise it, or on a remote
+        // route (decision Q4). Only a PyroWave request is ever changed here.
+        var pyroWaveBitstreamMismatch = false
+        if config.codec == .pyrowave {
+            let outcome = PyroWaveNegotiation.resolve(
+                config: config, sdp: SDPInfo(desc.body ?? ""), networkClass: networkClass
+            )
+            effectiveConfig = outcome.config
+            pyroWaveBitstreamMismatch = outcome.bitstreamMismatch
+            if let reason = outcome.downgradeReason {
+                rtspLog("PyroWave unavailable: \(reason), downgrading request to hevc", step: "DESCRIBE")
+            }
+            if outcome.bitstreamMismatch {
+                rtspLog("host PyroWave bitstream id differs from the vendored decoder (\(PyroWaveVendor.bitstreamID)), artifacts possible", step: "DESCRIBE")
             }
         }
 
@@ -240,7 +265,9 @@ final class RTSPClient {
             controlConnectData:  controlConnectData,
             videoPacketSize:     negotiatedPacketSize,
             route:               route,
-            networkClass:        networkClass
+            networkClass:        networkClass,
+            chroma444:           effectiveConfig.codec == .pyrowave && effectiveConfig.yuv444,
+            pyroWaveBitstreamMismatch: pyroWaveBitstreamMismatch
         )
     }
 
@@ -453,14 +480,20 @@ final class RTSPClient {
 
 // MARK: - SDP parser
 
-private struct SDPInfo {
+nonisolated struct SDPInfo {
     let videoCodec:   VideoCodec
+    // PyroWave is detected separately from `videoCodec`: that field returns .av1 first, so a
+    // host advertising both AV1 and PyroWave would otherwise hide PyroWave.
+    let advertisesPyroWave: Bool
+    let pyroWaveBitstreamID: String?   // value of a=x-ss-pyrowave.bitstream:, nil if absent
     let videoControl: String    // value of a=control: in the video section
     let audioControl: String    // value of a=control: in the audio section
 
     // Sunshine is AppVersion >= 5, so uses the /0/0 stream ID format.
     init() {
         videoCodec   = .h264
+        advertisesPyroWave  = false
+        pyroWaveBitstreamID = nil
         videoControl = "streamid=video/0/0"
         audioControl = "streamid=audio/0/0"
     }
@@ -481,9 +514,15 @@ private struct SDPInfo {
         var audioCtrl  = "streamid=audio/0/0"
         var inVideo    = false
         var inAudio    = false
+        var pyroWaveID: String?
 
         for raw in sdp.components(separatedBy: "\n") {
             let line = raw.trimmingCharacters(in: .whitespaces)
+            if line.hasPrefix("a=x-ss-pyrowave.bitstream:") {
+                let id = line.dropFirst("a=x-ss-pyrowave.bitstream:".count)
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                pyroWaveID = id.isEmpty ? nil : id
+            }
             if line.hasPrefix("m=video")      { inVideo = true;  inAudio = false }
             else if line.hasPrefix("m=audio") { inAudio = true;  inVideo = false }
             else if line.hasPrefix("a=control:") {
@@ -494,6 +533,8 @@ private struct SDPInfo {
         }
 
         videoCodec   = codec
+        advertisesPyroWave  = sdp.contains("PYROWAVE/90000")
+        pyroWaveBitstreamID = pyroWaveID
         videoControl = videoCtrl
         audioControl = audioCtrl
     }

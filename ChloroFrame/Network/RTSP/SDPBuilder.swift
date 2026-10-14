@@ -36,6 +36,7 @@ nonisolated enum SDPBuilder {
             case .h264: 0
             case .hevc: 1
             case .av1:  2
+            case .pyrowave: 3
         }
         let hevcFlag = config.codec == .hevc ? 1 : 0
         let refreshRateX100 = config.fps * 100
@@ -44,7 +45,21 @@ nonisolated enum SDPBuilder {
         let videoQos = networkClass == .local ? 5 : 0
         let audioQos = networkClass == .local ? 4 : 0
 
+        // PyroWave (decision Q3): BT.709 limited for SDR, matching the planar shader. Every other
+        // codec keeps the existing value (see gotcha 11 in the PyroWave plan).
+        let isPyroWave = config.codec == .pyrowave
+        let chromaSamplingType = isPyroWave && config.yuv444 ? 1 : 0
+        let encoderCscMode = config.hdr ? 4 : (isPyroWave ? 2 : 0)
+
         func a(_ name: String, _ value: Any) -> String { "a=\(name):\(value) \r\n" }
+
+        // PyroWave only: the presence of pyrowaveAdaptiveFec selects record framing on the host;
+        // pyrowaveFeatures 1 = FEC_RECORD_FRAMING. Empty (byte-identical SDP) for other codecs.
+        let pyroWaveAttributes = isPyroWave
+            ? a("x-ss-video[0].pyrowaveAdaptiveFec",     0) +
+              a("x-ss-video[0].pyrowaveAdaptiveBitrate", 0) +
+              a("x-ss-video[0].pyrowaveFeatures",        1)
+            : ""
 
         // moonlight SdpGenerator.c fillSdpHeader: "IN IPv4|IPv6 <url-safe address>", where the
         // IPv6 form is bracketed (addrToUrlSafeString). HostAddress.urlHost matches that.
@@ -59,7 +74,7 @@ nonisolated enum SDPBuilder {
             // Sunshine-specific feature negotiation
             a("x-ml-general.featureFlags",          3) +   // ML_FF_FEC_STATUS | ML_FF_SESSION_ID_V1
             a("x-ss-general.encryptionEnabled",     encryptionEnabled) +
-            a("x-ss-video[0].chromaSamplingType",   0) +   // YUV 4:2:0
+            a("x-ss-video[0].chromaSamplingType",   chromaSamplingType) +   // 0 = YUV 4:2:0, 1 = 4:4:4 (PyroWave only)
             // Stream geometry + encoder settings
             a("x-nv-video[0].clientViewportWd",     config.width) +
             a("x-nv-video[0].clientViewportHt",     config.height) +
@@ -93,12 +108,13 @@ nonisolated enum SDPBuilder {
             a("x-nv-video[0].dynamicRangeMode",     config.hdr ? 1 : 0) +
             a("x-nv-video[0].maxNumReferenceFrames", 1) +
             a("x-nv-video[0].clientRefreshRateX100", refreshRateX100) +
-            a("x-nv-video[0].encoderCscMode",       config.hdr ? 4 : 0) +   // 4=BT.2020 limited (HDR10), 0=BT.601 limited (SDR)
+            a("x-nv-video[0].encoderCscMode",       encoderCscMode) +   // 4=BT.2020 limited (HDR10), 0=BT.601 limited (SDR), 2=BT.709 limited (PyroWave SDR)
             // Audio (stereo)
             a("x-nv-audio.surround.numChannels",    2) +
             a("x-nv-audio.surround.channelMask",    3) +
             a("x-nv-audio.surround.enable",         0) +
             a("x-nv-audio.surround.AudioQuality",   0) +
-            a("x-nv-aqos.packetDuration",           5)
+            a("x-nv-aqos.packetDuration",           5) +
+            pyroWaveAttributes
     }
 }

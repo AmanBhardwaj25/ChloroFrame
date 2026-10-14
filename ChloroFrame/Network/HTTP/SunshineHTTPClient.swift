@@ -38,6 +38,17 @@ struct ServerInfo {
 
     /// True when the host advertises AV1 Main 10-bit encoding (required for HDR10).
     var supportsAV1Main10: Bool { codecModeSupport & Self.scmAV1Main10 != 0 }
+
+    // PyroWave ServerCodecModeSupport bits (vibeshine/docs/pyrowave-protocol.md "/serverinfo").
+    static let scmPyroWave          = 0x00800000   // 8-bit 4:2:0
+    static let scmPyroWave444       = 0x01000000   // 8-bit 4:4:4
+    static let scmPyroWaveHDR10     = 0x02000000   // 10-bit 4:2:0
+    static let scmPyroWaveHDR10_444 = 0x04000000   // 10-bit 4:4:4
+
+    var supportsPyroWave420:      Bool { codecModeSupport & Self.scmPyroWave != 0 }
+    var supportsPyroWave444:      Bool { codecModeSupport & Self.scmPyroWave444 != 0 }
+    var supportsPyroWaveHDR10:    Bool { codecModeSupport & Self.scmPyroWaveHDR10 != 0 }
+    var supportsPyroWaveHDR10_444: Bool { codecModeSupport & Self.scmPyroWaveHDR10_444 != 0 }
 }
 
 struct SunshineApp: Identifiable {

@@ -164,6 +164,7 @@ private extension VideoCodec {
         case .h264: return "H.264"
         case .hevc: return "H.265"
         case .av1:  return "AV1"
+        case .pyrowave: return "PyroWave"
         }
     }
 }

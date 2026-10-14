@@ -176,7 +176,8 @@ struct HostConnectionView: View {
                     StreamSettingsPopover(
                         overrideResolution: $overrideResolution,
                         overrideFPS:        $overrideFPS,
-                        overrideBitrate:    $overrideBitrate
+                        overrideBitrate:    $overrideBitrate,
+                        maxCustomMbps:      preferredCodec == "pyrowave" ? 2000 : 500
                     )
                 }
 
@@ -376,19 +377,42 @@ struct HostConnectionView: View {
         let codec: VideoCodec
         switch preferredCodec {
         case "h264": codec = .h264
+        // PyroWave only when this Mac can decode it and the host advertises the 8-bit 4:2:0
+        // profile. Remote routes are downgraded to HEVC in RTSP negotiation (decision Q4),
+        // where the route is known. Otherwise falls through to HEVC like AV1 does.
+        case "pyrowave" where VideoCapabilities.supportsPyroWave && serverInfo.supportsPyroWave420:
+            codec = .pyrowave
         case "av1" where VideoCapabilities.supportsAV1Hardware
                       && (wantHdr ? serverInfo.supportsAV1Main10 : serverInfo.supportsAV1Main8):
             codec = .av1
         default:     codec = .hevc
         }
+        // PyroWave is 8-bit 4:2:0 SDR only until D9 (HDR needs the 0x010e HDR-mode message), so
+        // HDR stays off for it here, which also keeps /launch hdrMode and RTSP in agreement.
         let enableHdr = wantHdr && (codec == .hevc || codec == .av1)
+        // PyroWave needs hundreds of Mbps, so without a user override it gets its own default
+        // instead of the 80 Mbps cap in DisplayConfig. The ordinary auto value rides along as
+        // the fallback an RTSP downgrade to HEVC restores.
+        var streamDisplay = display
+        var fallbackBitrate: Int? = nil
+        if codec == .pyrowave {
+            fallbackBitrate = display.bitrate
+            if overrideBitrate == 0 {
+                streamDisplay = DisplayConfig(
+                    width: display.width, height: display.height, fps: display.fps, hdr: display.hdr,
+                    bitrateOverride: PyroWaveBitrate.defaultKbps(
+                        width: display.width, height: display.height, fps: display.fps
+                    )
+                )
+            }
+        }
         do {
             let result = try await client.launchApp(id: app.id, display: display, hdrMode: enableHdr)
             // Show the negotiating UI immediately, then start RTSP in the same task.
             // Do NOT use a SwiftUI .task for this — the view scheduling delay (~2s) causes
             // Sunshine's RTSP session to time out before we send SETUP.
             phase = .negotiating(app, result)
-            await negotiate(app: app, result: result, display: display, codec: codec, hdr: enableHdr)
+            await negotiate(app: app, result: result, display: streamDisplay, codec: codec, hdr: enableHdr, fallbackBitrateKbps: fallbackBitrate)
         } catch {
             phase = .launchFailed(app, serverInfo, error)
         }
@@ -408,7 +432,7 @@ struct HostConnectionView: View {
         await connect()
     }
 
-    private func negotiate(app: SunshineApp, result: SunshineHTTPClient.LaunchResult, display: DisplayConfig, codec: VideoCodec, hdr enableHdr: Bool) async {
+    private func negotiate(app: SunshineApp, result: SunshineHTTPClient.LaunchResult, display: DisplayConfig, codec: VideoCodec, hdr enableHdr: Bool, fallbackBitrateKbps: Int? = nil) async {
         guard let sessionURL = URL(string: result.sessionUrl) else {
             phase = .failed(RTSPError.badURL); return
         }
@@ -418,7 +442,8 @@ struct HostConnectionView: View {
             fps:     display.fps,
             bitrate: display.bitrate,
             codec:   codec,
-            hdr:     enableHdr
+            hdr:     enableHdr,
+            fallbackBitrateKbps: fallbackBitrateKbps
         )
         AppLogger.shared.log(
             "stream config \(config.width)×\(config.height)@\(config.fps) \(config.bitrate)kbps hdr=\(enableHdr) (display_edr=\(display.hdr))",
@@ -465,7 +490,8 @@ struct HostConnectionView: View {
             switch stream.videoCodec {
             case .h264: codecName = "H.264"
             case .hevc: codecName = "H.265"
-            default:    codecName = "AV1"
+            case .av1:  codecName = "AV1"
+            case .pyrowave: codecName = "PyroWave"
             }
             let appId     = app.id
             let clientRef = client
@@ -504,6 +530,8 @@ private struct StreamSettingsPopover: View {
     @Binding var overrideResolution: String
     @Binding var overrideFPS: Int
     @Binding var overrideBitrate: Int
+    // 500 normally, 2000 when PyroWave is the preferred codec (decision Q5).
+    let maxCustomMbps: Int
 
     // Fetched on appear — owned by the popover so there's no parent-to-child timing race.
     @State private var availableModes: [DisplayResolution] = []
@@ -562,12 +590,13 @@ private struct StreamSettingsPopover: View {
                     }
 
                     // Custom bitrate (Mbps). Overrides the picker above; 0 = Auto.
-                    // Clamped to 500 Mbps for now (experimental).
+                    // Clamped to 500 Mbps for now (experimental); 2000 when PyroWave is the
+                    // preferred codec, which needs hundreds of Mbps.
                     TextField("Custom (Mbps)", value: Binding(
                         get: { overrideBitrate / 1000 },
-                        set: { overrideBitrate = max(0, min($0, 500)) * 1000 }
+                        set: { overrideBitrate = max(0, min($0, maxCustomMbps)) * 1000 }
                     ), format: .number)
-                    .help("Type a custom target bitrate in Mbps (max 500). Takes effect on the next connect.")
+                    .help("Type a custom target bitrate in Mbps (max \(maxCustomMbps)). Takes effect on the next connect.")
                 }
 
                 Section {
