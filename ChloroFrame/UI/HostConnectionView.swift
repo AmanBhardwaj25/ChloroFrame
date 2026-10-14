@@ -56,6 +56,9 @@ struct HostConnectionView: View {
     @State private var showFallbackDetails = false
     @State private var pyroWaveCheckReport: PyroWaveAuditReport?
     @State private var pyroWaveChecking = false
+    // PyroWave UDP network test (D7b), "Test network" in the app list.
+    @State private var networkTestResult: (outcome: PyroWaveNetworkTestOutcome, kbps: Int)?
+    @State private var networkTesting = false
 
     init(host: Host) {
         self.host = host
@@ -94,6 +97,15 @@ struct HostConnectionView: View {
         .sheet(isPresented: $showFallbackDetails) {
             if let report = pyroWaveFallbackReport {
                 PyroWaveAuditReportView(report: report, onClose: { showFallbackDetails = false })
+            }
+        }
+        .sheet(isPresented: Binding(
+            get: { networkTestResult != nil },
+            set: { if !$0 { networkTestResult = nil } }
+        )) {
+            if let result = networkTestResult {
+                PyroWaveNetworkTestView(outcome: result.outcome, kbps: result.kbps,
+                                        onClose: { networkTestResult = nil })
             }
         }
         .sheet(isPresented: Binding(
@@ -274,6 +286,15 @@ struct HostConnectionView: View {
                 .disabled(pyroWaveChecking)
                 .help("Runs the PyroWave readiness checks for this host and shows every result, even when PyroWave is not the selected codec.")
                 if pyroWaveChecking { ProgressView().controlSize(.small) }
+                Button("Test network") {
+                    Task { await runNetworkTest() }
+                }
+                .disabled(networkTesting || pyroWaveChecking)
+                .help("Sends about 3 seconds of test traffic from the host at the PyroWave bitrate and grades loss and jitter on this path. The host refuses while a stream is running.")
+                if networkTesting {
+                    ProgressView().controlSize(.small)
+                    Text("Testing, about 3 seconds").foregroundStyle(.secondary)
+                }
                 Spacer()
             }
             .font(.caption)
@@ -482,6 +503,15 @@ struct HostConnectionView: View {
             requestedKbps: pyroWaveRequestedKbps(display: display),
             userWantsHDR: enableHDR, forceRefresh: true, reason: "button"
         )
+    }
+
+    private func runNetworkTest() async {
+        networkTesting = true
+        defer { networkTesting = false }
+        let display = buildDisplayConfig(base: DisplayConfig.detect())
+        networkTestResult = await PyroWaveNetworkTest.run(
+            client: client, display: display,
+            requestedKbps: pyroWaveRequestedKbps(display: display), reason: "button")
     }
 
     private func performLaunch(app: SunshineApp, serverInfo: ServerInfo, pyroWave: PyroWaveLaunchChoice) async {

@@ -28,6 +28,7 @@ final class PyroWaveReadinessAuditTests: XCTestCase {
         i.packetSize = 1392
         i.maxSocketBufferBytes = 8 * 1024 * 1024
         i.suppressAWDLEnabled = true
+        i.udpTestPassed = true   // C16: the network test was run and passed
         i.awdlHelperInstalled = true
         i.gpuDecodeMs = 0.4
         return i
@@ -338,9 +339,17 @@ final class PyroWaveReadinessAuditTests: XCTestCase {
         XCTAssertFalse(PyroWaveReadinessAudit.evaluate(i).blocked)
     }
 
-    func testC16NotRunIsSilentAndFailureWarns() {
+    func testC16NotRunWarnsAndFailureWarns() {
         var i = good()
-        XCTAssertFalse(row("C16", i).isWarning)
+        i.udpTestPassed = nil
+        XCTAssertTrue(row("C16", i).isWarning)
+        XCTAssertFalse(row("C16", i).failedAsBlocker)
+        XCTAssertFalse(PyroWaveReadinessAudit.evaluate(i).blocked)
+        // Could not run: still a warning, and the reason is shown.
+        i.udpTestSummary = "network test could not run: x"
+        XCTAssertTrue(row("C16", i).isWarning)
+        XCTAssertEqual(row("C16", i).message, "network test could not run: x")
+        i.udpTestSummary = nil
         i.udpTestPassed = false
         XCTAssertTrue(row("C16", i).isWarning)
         i.udpTestPassed = true

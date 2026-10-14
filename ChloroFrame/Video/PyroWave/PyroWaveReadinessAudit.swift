@@ -207,7 +207,7 @@ nonisolated struct PyroWaveAuditInputs: Sendable {
     var userWants444 = false
     // C15. nil when the benchmark could not run. Average GPU milliseconds per frame at the stream size.
     var gpuDecodeMs: Double?
-    // C16. nil until D7b.
+    // C16. nil: not run, or could not run (the summary then says why).
     var udpTestPassed: Bool?
     var udpTestSummary: String?
 
@@ -486,8 +486,10 @@ nonisolated enum PyroWaveReadinessAudit {
 
     private static func c16(_ i: PyroWaveAuditInputs) -> PyroWaveCheckResult {
         guard let passed = i.udpTestPassed else {
-            return make("C16", .warning, .unknown("network test not run"), unknown: .silent,
-                        detail: "Run the network test from the app list to measure loss and jitter on this path.")
+            // Not run (or could not run): a warning, so the user hears that the path is unmeasured
+            // without the launch being delayed to measure it.
+            return make("C16", .warning, .unknown(i.udpTestSummary ?? "network test not run"), unknown: .warns,
+                        detail: "Use Test network in the app list to measure loss and jitter on this path before streaming.")
         }
         return passed
             ? make("C16", .warning, .pass, detail: i.udpTestSummary)

@@ -126,6 +126,11 @@ enum PyroWaveAuditRunner {
         inputs.userWantsHDR = userWantsHDR
         let bench = await benchmark
         inputs.gpuDecodeMs = bench.ms
+        // C16 only reads the session cache; the test itself is the "Test network" action.
+        let netFacts = PyroWaveNetworkTest.auditFacts(entry: PyroWaveNetworkTest.cached(cacheKey),
+                                                      requestedKbps: requestedKbps)
+        inputs.udpTestPassed = netFacts.passed
+        inputs.udpTestSummary = netFacts.summary
 
         let report = PyroWaveReadinessAudit.evaluate(inputs)
 

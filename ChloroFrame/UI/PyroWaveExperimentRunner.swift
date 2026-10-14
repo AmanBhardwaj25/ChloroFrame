@@ -108,6 +108,12 @@ final class PyroWaveExperimentRunner {
         var results: [PyroWaveExperimentReport.PhaseResult] = []
         var text = "PyroWave experiment \(Date())\nhost \(host.name)\n\n"
 
+        if cfg.udpProbeRepeats > 0 {
+            if streamState.isActive { streamState.stop(); try? await Task.sleep(nanoseconds: 3_000_000_000) }
+            text += await runUdpProbes(cfg, host: host)
+            write(text)
+        }
+
         for phase in cfg.phases {
             var result = await runPhase(phase, cfg: cfg, host: host, present: present, dismiss: dismiss,
                                         streamState: streamState)
@@ -134,6 +140,30 @@ final class PyroWaveExperimentRunner {
             try? await Task.sleep(nanoseconds: 1_000_000_000)
             NSApp.terminate(nil)
         }
+    }
+
+    // MARK: - UDP network test (D7b)
+
+    /// Runs the host UDP probe `cfg.udpProbeRepeats` times with no stream active and returns the
+    /// report text. The probe needs the paired HTTPS port, which a serverinfo call sets.
+    private func runUdpProbes(_ cfg: PyroWaveExperimentConfig, host: Host) async -> String {
+        let client = SunshineHTTPClient(host: host)
+        _ = try? await client.fetchServerInfo()
+        let display = DisplayConfig.detect()
+        let override = UserDefaults.standard.integer(forKey: "streamOverrideBitrate")
+        let kbps = cfg.udpProbeKbps
+            ?? (override > 0 ? override
+                : PyroWaveBitrate.defaultKbps(width: display.width, height: display.height, fps: display.fps))
+        var text = "UDP network test (D7b), \(cfg.udpProbeRepeats) run(s) at \(kbps / 1000) Mbps\n"
+        for n in 1...cfg.udpProbeRepeats {
+            let result = await PyroWaveNetworkTest.run(client: client, display: display, requestedKbps: kbps,
+                                                       reason: "experiment \(n)",
+                                                       ignoreHostVersionKeys: cfg.udpProbeIgnoreVersionKeys)
+            text += "  run \(n): \(result.outcome.summary)\n"
+            DebugFileLog.write("[experiment] udp probe \(n)/\(cfg.udpProbeRepeats) done")
+            if n < cfg.udpProbeRepeats { try? await Task.sleep(nanoseconds: 1_500_000_000) }
+        }
+        return text + "\n"
     }
 
     // MARK: - One phase

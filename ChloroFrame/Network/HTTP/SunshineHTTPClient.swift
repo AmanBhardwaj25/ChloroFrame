@@ -166,6 +166,114 @@ final class SunshineHTTPClient: NSObject {
         return PyroWaveHostInfo(xml: data)
     }
 
+    /// PyroWave UDP network test (D7b): asks the host to send a 2 s synthetic flow at `kbps`,
+    /// receives it on a throwaway socket and grades it. Paired HTTPS, one request, no stream may
+    /// be active (the host refuses). Never throws: every failure is `.unavailable` with a reason,
+    /// because "could not test" must not read as a bad network.
+    func runPyroWaveUdpProbe(kbps: Int, packetSize: Int, fps: Int?, paceKbps: Int?,
+                             route: RouteInfo, pinInterfaceIndex: UInt32?) async -> PyroWaveNetworkTestOutcome {
+        if _cachedIdentity == nil { loadAndCacheIdentity() }
+        let token = PyroWaveUdpProbeRequest.makeToken()
+        let socket: PyroWaveUdpProbeSocket
+        do {
+            socket = try PyroWaveUdpProbeSocket(token: token, family: route.family, pinInterfaceIndex: pinInterfaceIndex)
+        } catch {
+            return .unavailable("could not open a UDP socket (\(error))")
+        }
+        let request = PyroWaveUdpProbeRequest(kbps: kbps, port: Int(socket.localPort), packetSize: packetSize,
+                                              token: token, fps: fps, paceKbps: paceKbps)
+        if let problem = request.validationError {
+            _ = socket.finish()
+            return .unavailable(problem)
+        }
+
+        var comps = URLComponents()
+        comps.scheme = "https"
+        comps.host = HostAddress.urlHost(activeAddress)
+        comps.port = Int(httpsPort)
+        comps.path = "/pyrowave-udp-probe"
+        comps.queryItems = [URLQueryItem(name: "uniqueid", value: uniqueDeviceId)] + request.queryItems
+        guard let url = comps.url else {
+            _ = socket.finish()
+            return .unavailable("could not build the probe URL")
+        }
+
+        let config = URLSessionConfiguration.ephemeral
+        config.timeoutIntervalForRequest = 8     // headers normally arrive within a second
+        config.timeoutIntervalForResource = 12   // handshake (1.5 s) + probe (2 s) + margin
+        let delegate = PyroWaveUdpProbeHTTPDelegate(identity: _cachedIdentity)
+        let session = URLSession(configuration: config, delegate: delegate, delegateQueue: nil)
+        defer { session.invalidateAndCancel() }
+
+        var urlRequest = URLRequest(url: url)
+        urlRequest.timeoutInterval = 8
+        socket.startReceiving()
+        session.dataTask(with: urlRequest).resume()
+
+        // `nil` is the legacy probe (no X-PyroWave-Udp-Port): the host sends to the port we
+        // gave it, with no token to return, so only the receive side is needed.
+        let udpPort: Int?
+        switch await delegate.headers.wait() {
+        case .ready(let port):
+            udpPort = port
+        case .missingPort:
+            udpPort = nil
+        case .rejected(let status):
+            _ = socket.finish()
+            var reason = "the host refused the test (HTTP \(status))"
+            if case .body(let data) = await delegate.completion.wait(),
+               let text = String(data: data, encoding: .utf8), !text.isEmpty {
+                reason += ": \(text.prefix(120))"
+            }
+            return .unavailable(reason)
+        case .failed(let message):
+            _ = socket.finish()
+            return .unavailable("could not reach the host: \(message)")
+        }
+
+        // The host waits up to 1.5 s for the token and retries its own warmup every 100 ms, so
+        // repeat ours until the first measured packet shows up.
+        let destination = route.destination
+        let sender = Task.detached {
+            guard let udpPort else { return }
+            let deadline = Date().addingTimeInterval(1.4)
+            while !Task.isCancelled && Date() < deadline && !socket.hasData {
+                try? socket.sendToken(token, to: destination, port: UInt16(udpPort))
+                try? await Task.sleep(nanoseconds: 100_000_000)
+            }
+        }
+        let completion = await delegate.completion.wait()
+        sender.cancel()
+        // The host's XML arrives when its send finishes; late datagrams still in flight need the
+        // same 100 ms drain the host charges.
+        try? await Task.sleep(nanoseconds: 100_000_000)
+        let collected = socket.finish()
+
+        let data: Data
+        switch completion {
+        case .body(let d): data = d
+        case .failed(let message): return .unavailable("the host's result did not arrive: \(message)")
+        }
+        switch PyroWaveUdpProbeHostResult.parse(data) {
+        case .malformed:
+            let text = String(data: data, encoding: .utf8) ?? ""
+            let sample = text.isEmpty ? "an empty body" : "\"\(text.prefix(100))\""
+            return .unavailable("the host's result could not be read (\(udpPort == nil ? "no handshake port, " : "")got \(sample))")
+        case .failure(let code, _) where code == 404:
+            return .unavailable("this host build has no UDP probe endpoint (it answered 404); a newer Vibeshine build is needed")
+        case .failure(let code, let message):
+            return .unavailable("the host reported \(code): \(message)")
+        case .counts(let expected, let sent, let elapsedMs, let retries, _):
+            let burst = (fps != nil && paceKbps != nil)
+                ? (fps: fps!, paceKbps: paceKbps!, ipv6: route.family == AF_INET6) : nil
+            let verdict = PyroWaveUdpProbeGrader.grade(
+                arrivals: collected.arrivals,
+                host: (expected: expected, sent: sent, elapsedMs: elapsedMs, sendRetries: retries),
+                packetSize: packetSize, burst: burst, duplicates: collected.duplicates)
+            return .graded(verdict)
+        }
+    }
+
     func isPaired() -> Bool {
         UserDefaults.standard.bool(forKey: pairedKey)
     }

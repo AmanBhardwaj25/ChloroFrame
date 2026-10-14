@@ -55,10 +55,20 @@ nonisolated struct PyroWaveExperimentConfig: Codable, Equatable {
     /// Seconds of the window ignored after the first decoded frame (startup transients).
     var skipSeconds: Double = 5
     var quitWhenDone: Bool = false
+    /// Runs the UDP network test (D7b) this many times before the first phase and puts each
+    /// result in the report. 0 = not at all. With no phases this makes a probe-only run.
+    var udpProbeRepeats: Int = 0
+    /// Bitrate for those probes in kbps. nil: the same bitrate a PyroWave launch would request.
+    var udpProbeKbps: Int?
+    /// Ask the host even when its paired server info does not advertise the probe.
+    var udpProbeIgnoreVersionKeys: Bool = false
     var phases: [Phase]
 
     init(hostName: String? = nil, appTitle: String? = nil, startupTimeoutSeconds: Double = 90,
-         skipSeconds: Double = 5, quitWhenDone: Bool = false, phases: [Phase]) {
+         skipSeconds: Double = 5, quitWhenDone: Bool = false, udpProbeRepeats: Int = 0,
+         udpProbeKbps: Int? = nil, phases: [Phase]) {
+        self.udpProbeRepeats = udpProbeRepeats
+        self.udpProbeKbps = udpProbeKbps
         self.hostName = hostName
         self.appTitle = appTitle
         self.startupTimeoutSeconds = startupTimeoutSeconds
@@ -74,7 +84,10 @@ nonisolated struct PyroWaveExperimentConfig: Codable, Equatable {
         startupTimeoutSeconds = try c.decodeIfPresent(Double.self, forKey: .startupTimeoutSeconds) ?? 90
         skipSeconds = try c.decodeIfPresent(Double.self, forKey: .skipSeconds) ?? 5
         quitWhenDone = try c.decodeIfPresent(Bool.self, forKey: .quitWhenDone) ?? false
-        phases = try c.decode([Phase].self, forKey: .phases)
+        udpProbeRepeats = try c.decodeIfPresent(Int.self, forKey: .udpProbeRepeats) ?? 0
+        udpProbeKbps = try c.decodeIfPresent(Int.self, forKey: .udpProbeKbps)
+        udpProbeIgnoreVersionKeys = try c.decodeIfPresent(Bool.self, forKey: .udpProbeIgnoreVersionKeys) ?? false
+        phases = try c.decodeIfPresent([Phase].self, forKey: .phases) ?? []
     }
 
     /// The D10 A/B: natural network on and off, then software loss, independent and bursty.

@@ -188,6 +188,48 @@ struct PyroWaveAuditReportView: View {
     }
 }
 
+// MARK: - Network test result
+
+struct PyroWaveNetworkTestView: View {
+    let outcome: PyroWaveNetworkTestOutcome
+    let kbps: Int
+    let onClose: () -> Void
+
+    private var headline: (text: String, color: Color) {
+        switch outcome {
+        case .graded(let v):
+            return v.passed ? ("This network path passed the PyroWave test.", .green)
+                            : ("This network path did not pass the PyroWave test.", .orange)
+        case .unavailable:
+            return ("The network test could not run.", .secondary)
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("PyroWave network test").font(.headline)
+            Text(headline.text).font(.subheadline).foregroundStyle(headline.color)
+            Divider()
+            VStack(alignment: .leading, spacing: 6) {
+                ForEach(Array(PyroWaveNetworkTest.detailLines(outcome, kbps: kbps).enumerated()), id: \.offset) { _, line in
+                    Text(line).font(.caption).fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            Spacer(minLength: 0)
+            HStack {
+                Button("Copy") {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(outcome.summary, forType: .string)
+                }
+                Spacer()
+                Button("Close", action: onClose).keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(24)
+        .frame(width: 460, height: 300)
+    }
+}
+
 private extension String {
     /// Inline markdown (the notice copy uses **bold**), falling back to plain text.
     var markdown: AttributedString {
