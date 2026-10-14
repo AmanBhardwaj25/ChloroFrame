@@ -158,7 +158,8 @@ final class PyroWaveExperimentRunner {
         for n in 1...cfg.udpProbeRepeats {
             let result = await PyroWaveNetworkTest.run(client: client, display: display, requestedKbps: kbps,
                                                        reason: "experiment \(n)",
-                                                       ignoreHostVersionKeys: cfg.udpProbeIgnoreVersionKeys)
+                                                       ignoreHostVersionKeys: cfg.udpProbeIgnoreVersionKeys,
+                                                       frameShaped: cfg.udpProbeFrameShaped)
             text += "  run \(n): \(result.outcome.summary)\n"
             DebugFileLog.write("[experiment] udp probe \(n)/\(cfg.udpProbeRepeats) done")
             if n < cfg.udpProbeRepeats { try? await Task.sleep(nanoseconds: 1_500_000_000) }

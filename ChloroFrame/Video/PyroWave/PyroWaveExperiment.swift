@@ -62,6 +62,8 @@ nonisolated struct PyroWaveExperimentConfig: Codable, Equatable {
     var udpProbeKbps: Int?
     /// Ask the host even when its paired server info does not advertise the probe.
     var udpProbeIgnoreVersionKeys: Bool = false
+    /// false: the even 1 ms schedule instead of frame-shaped bursts (to separate the two).
+    var udpProbeFrameShaped: Bool = true
     var phases: [Phase]
 
     init(hostName: String? = nil, appTitle: String? = nil, startupTimeoutSeconds: Double = 90,
@@ -87,6 +89,7 @@ nonisolated struct PyroWaveExperimentConfig: Codable, Equatable {
         udpProbeRepeats = try c.decodeIfPresent(Int.self, forKey: .udpProbeRepeats) ?? 0
         udpProbeKbps = try c.decodeIfPresent(Int.self, forKey: .udpProbeKbps)
         udpProbeIgnoreVersionKeys = try c.decodeIfPresent(Bool.self, forKey: .udpProbeIgnoreVersionKeys) ?? false
+        udpProbeFrameShaped = try c.decodeIfPresent(Bool.self, forKey: .udpProbeFrameShaped) ?? true
         phases = try c.decodeIfPresent([Phase].self, forKey: .phases) ?? []
     }
 

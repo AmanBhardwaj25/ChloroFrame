@@ -46,7 +46,8 @@ enum PyroWaveNetworkTest {
     /// Runs the test at `requestedKbps` (clamped to the host's accepted range). Takes about
     /// 3 seconds. Refused by the host while any stream is active.
     static func run(client: SunshineHTTPClient, display: DisplayConfig, requestedKbps: Int,
-                    reason: String, ignoreHostVersionKeys: Bool = false) async -> (outcome: PyroWaveNetworkTestOutcome, kbps: Int) {
+                    reason: String, ignoreHostVersionKeys: Bool = false,
+                    frameShaped: Bool = true) async -> (outcome: PyroWaveNetworkTestOutcome, kbps: Int) {
         let kbps = min(max(requestedKbps, PyroWaveUdpProbeRequest.minKbps), PyroWaveUdpProbeRequest.maxKbps)
         let address = client.activeAddress
 
@@ -87,7 +88,7 @@ enum PyroWaveNetworkTest {
         // link, and ChloroFrame does not announce its link speed).
         var fps: Int?
         var pace: Int?
-        if (info.udpProbeBurstVersion ?? 0) >= 1, display.fps >= 10, display.fps <= 500,
+        if frameShaped, (info.udpProbeBurstVersion ?? 0) >= 1, display.fps >= 10, display.fps <= 500,
            let hostLink = info.linkMbps, hostLink > 0 {
             fps = display.fps
             pace = min(max(hostLink * 1000, kbps), 9_999_999)

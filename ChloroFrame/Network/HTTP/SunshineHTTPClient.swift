@@ -208,6 +208,7 @@ final class SunshineHTTPClient: NSObject {
         var urlRequest = URLRequest(url: url)
         urlRequest.timeoutInterval = 8
         socket.startReceiving()
+        socket.startTokenSender(token, to: route.destination)
         session.dataTask(with: urlRequest).resume()
 
         // `nil` is the legacy probe (no X-PyroWave-Udp-Port): the host sends to the port we
@@ -216,6 +217,7 @@ final class SunshineHTTPClient: NSObject {
         switch await delegate.headers.wait() {
         case .ready(let port):
             udpPort = port
+            socket.setHostPort(UInt16(port))
         case .missingPort:
             udpPort = nil
         case .rejected(let status):
@@ -233,20 +235,11 @@ final class SunshineHTTPClient: NSObject {
 
         // The host waits up to 1.5 s for the token and retries its own warmup every 100 ms, so
         // repeat ours until the first measured packet shows up.
-        let destination = route.destination
-        let sender = Task.detached {
-            guard let udpPort else { return }
-            let deadline = Date().addingTimeInterval(1.4)
-            while !Task.isCancelled && Date() < deadline && !socket.hasData {
-                try? socket.sendToken(token, to: destination, port: UInt16(udpPort))
-                try? await Task.sleep(nanoseconds: 100_000_000)
-            }
-        }
         let completion = await delegate.completion.wait()
-        sender.cancel()
         // The host's XML arrives when its send finishes; late datagrams still in flight need the
         // same 100 ms drain the host charges.
         try? await Task.sleep(nanoseconds: 100_000_000)
+        let diagnostics = socket.handshakeDiagnostics
         let collected = socket.finish()
 
         let data: Data
@@ -262,7 +255,7 @@ final class SunshineHTTPClient: NSObject {
         case .failure(let code, _) where code == 404:
             return .unavailable("this host build has no UDP probe endpoint (it answered 404); a newer Vibeshine build is needed")
         case .failure(let code, let message):
-            return .unavailable("the host reported \(code): \(message)")
+            return .unavailable("the host reported \(code): \(message) (\(diagnostics))")
         case .counts(let expected, let sent, let elapsedMs, let retries, _):
             let burst = (fps != nil && paceKbps != nil)
                 ? (fps: fps!, paceKbps: paceKbps!, ipv6: route.family == AF_INET6) : nil
