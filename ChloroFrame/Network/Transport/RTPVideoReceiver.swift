@@ -434,7 +434,7 @@ final class RTPVideoReceiver {
             pyroWaveDecoder.recordTrimReject()
             if loggedPyroWaveTrimFailures < 5 {
                 loggedPyroWaveTrimFailures += 1
-                print("[RTPVideoReceiver] PyroWave frame dropped, trim failed: \(failure) "
+                DebugFileLog.write("[RTPVideoReceiver] PyroWave frame dropped, trim failed: \(failure) "
                       + "(assembled=\(frameBytes.count) packetSize=\(packetSize))")
             }
         case .success(let validLen):

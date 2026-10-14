@@ -274,7 +274,7 @@ nonisolated final class PyroWaveDecoder: @unchecked Sendable {
                 shouldLog = true
             }
         }
-        if shouldLog, let message { print("[PyroWaveDecoder] \(message)") }
+        if shouldLog, let message { DebugFileLog.write("[PyroWaveDecoder] \(message)") }
         stats?.recordFrameDropped()
     }
 }

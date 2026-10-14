@@ -76,7 +76,7 @@ nonisolated final class PyroWaveDevice: @unchecked Sendable {
             throw PyroWaveError.failed("pyrowave_device_create", code: result.rawValue)
         }
 
-        print("[PyroWave] device created in \(String(format: "%.0f", elapsedMs)) ms")
+        DebugFileLog.write("[PyroWave] device created in \(String(format: "%.0f", elapsedMs)) ms")
         let wrapped = PyroWaveDevice(mtlDevice: device, handle: created, creationMs: elapsedMs)
         cache[device.registryID] = wrapped
         return wrapped
@@ -89,7 +89,7 @@ nonisolated final class PyroWaveDevice: @unchecked Sendable {
             do {
                 _ = try shared(for: device)
             } catch {
-                print("[PyroWave] warm-up failed: \(error)")
+                DebugFileLog.write("[PyroWave] warm-up failed: \(error)")
             }
         }
     }

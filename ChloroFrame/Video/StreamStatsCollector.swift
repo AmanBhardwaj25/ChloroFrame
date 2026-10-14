@@ -375,6 +375,14 @@ final class StreamStatsCollector {
                 pw.poolExhausted, pw.mailboxReplaced, pw.gpuFailures, pw.decodeAvgMs, pw.gpuMsMax)
         }
         SessionLog.shared.line(vLine + "  ||  " + aLine + pwLine)
+        // DEBUG builds only: the same 1 Hz line, plus cumulative frame counts, to
+        // /tmp/chloroframe-debug.log. Compiled out of Release.
+        #if DEBUG
+        DebugFileLog.writeAsync("[stats] " + vLine + pwLine
+            + String(format: " | frames ok=%ld lost=%ld decoded=%ld dropped=%ld pkts=%ld fec=%ld",
+                     snap.framesAssembled, snap.framesLost, snap.framesDecoded, snap.framesDropped,
+                     snap.packetsReceived, snap.packetsRecovered))
+        #endif
 
         current = StreamStats(
             reqWidth: requestedWidth,
