@@ -109,8 +109,16 @@ final class PyroWaveExperimentRunner {
         var text = "PyroWave experiment \(Date())\nhost \(host.name)\n\n"
 
         for phase in cfg.phases {
-            let result = await runPhase(phase, cfg: cfg, host: host, present: present, dismiss: dismiss,
+            var result = await runPhase(phase, cfg: cfg, host: host, present: present, dismiss: dismiss,
                                         streamState: streamState)
+            // The host occasionally answers RTSP without PyroWave (seen right after a previous
+            // session ended), which downgrades the stream to HEVC. One retry is enough.
+            if let failure = result.failure, failure.contains("not PyroWave") {
+                DebugFileLog.write("[experiment] phase \(phase.name) was not PyroWave, retrying once")
+                try? await Task.sleep(nanoseconds: 5_000_000_000)
+                result = await runPhase(phase, cfg: cfg, host: host, present: present, dismiss: dismiss,
+                                        streamState: streamState)
+            }
             results.append(result)
             let block = PyroWaveExperimentReport.format(result)
             text += block + "\n"
