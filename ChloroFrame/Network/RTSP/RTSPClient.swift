@@ -179,6 +179,7 @@ final class RTSPClient {
             #if DEBUG
             DebugFileLog.write("[ChloroFrame][rtsp] PyroWave advertised=\(SDPInfo(desc.body ?? "").advertisesPyroWave) "
                       + "id=\(SDPInfo(desc.body ?? "").pyroWaveBitstreamID ?? "nil") class=\(networkClass) "
+                      + "dest=\(route?.destination ?? "?") iface=\(route?.interfaceName ?? "?") "
                       + "-> codec=\(outcome.config.codec) bitrate=\(outcome.config.bitrate) "
                       + "downgrade=\(outcome.downgradeReason ?? "none") mismatch=\(outcome.bitstreamMismatch)")
             #endif

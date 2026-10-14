@@ -401,7 +401,12 @@ struct HostConnectionView: View {
         var streamDisplay = display
         var fallbackBitrate: Int? = nil
         if codec == .pyrowave {
-            fallbackBitrate = display.bitrate
+            // A stored custom bitrate above the non-PyroWave cap (500 Mbps) is only valid for
+            // PyroWave; sending it to HEVC makes the host's NVENC reject the session. Fall back
+            // to the auto value in that case.
+            let autoBitrate = DisplayConfig(width: display.width, height: display.height,
+                                            fps: display.fps, hdr: display.hdr).bitrate
+            fallbackBitrate = display.bitrate > 500_000 ? autoBitrate : display.bitrate
             if overrideBitrate == 0 {
                 streamDisplay = DisplayConfig(
                     width: display.width, height: display.height, fps: display.fps, hdr: display.hdr,
