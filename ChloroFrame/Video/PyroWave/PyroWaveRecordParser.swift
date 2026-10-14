@@ -14,6 +14,18 @@ nonisolated struct PyroWaveStreamFormat: Equatable {
     let height: Int
     let chroma444: Bool
     let bitDepth: Int          // 8 or 10; not in the bitstream, comes from negotiation
+
+    /// Why this format cannot be decoded, or nil. Same rules and wording the decoder enforces.
+    var validationFailure: String? {
+        guard width > 0, height > 0, width <= 16384, height <= 16384 else {
+            return "size \(width)x\(height)"
+        }
+        guard chroma444 || (width % 2 == 0 && height % 2 == 0) else {
+            return "4:2:0 needs even dimensions, got \(width)x\(height)"
+        }
+        guard bitDepth == 8 || bitDepth == 10 else { return "bit depth \(bitDepth)" }
+        return nil
+    }
 }
 
 nonisolated enum PyroWaveRecordParser {

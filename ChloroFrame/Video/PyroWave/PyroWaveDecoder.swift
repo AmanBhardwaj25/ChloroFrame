@@ -18,6 +18,52 @@ import CoreMedia
 import Metal
 import QuartzCore
 
+/// Sum, count and peak of one timed stage, in milliseconds.
+nonisolated struct StageStat: Equatable {
+    var sum = 0.0
+    var count = 0
+    var max = 0.0
+
+    var avg: Double { count > 0 ? sum / Double(count) : 0 }
+
+    mutating func add(_ ms: Double) {
+        sum += ms
+        count += 1
+        if ms > max { max = ms }
+    }
+}
+
+/// Where a PyroWave frame's wall time goes between assembly and the renderer (D7).
+///
+/// Receive thread: `rxTrimCopy` (assembled buffer to `Data`), `rxPacket` (slowest single
+/// `addPacket` since the previous frame, which includes FEC, block staging and the frame emit).
+/// Decode queue: `queueWait` (submit until the queue thread starts the job), `parse`, `push`
+/// (clear, C push, ready check), `encode` (pool acquire, command buffer, GPU encode, commit).
+/// GPU side: `commitToGPU` (commit until `gpuStartTime`), `gpu`, `completionLag` (`gpuEndTime`
+/// until the completed handler runs). `total` is submit to completed handler.
+nonisolated struct PyroWaveStageTimes: Equatable {
+    var gap = StageStat()            // interval between consecutive submits
+    var rxTrimCopy = StageStat()
+    var rxPacket = StageStat()
+    var queueWait = StageStat()
+    var parse = StageStat()
+    var push = StageStat()
+    var encode = StageStat()
+    var commitToGPU = StageStat()
+    var gpu = StageStat()
+    var completionLag = StageStat()
+    var total = StageStat()
+
+    // Why a frame was replaced in the single-slot mailbox.
+    var replacedBurst = 0            // the replacing frame came less than `burstGapMs` after the previous one
+    var replacedWhileProcessing = 0  // decode queue was busy inside process() (decode time)
+    var replacedWhileWaiting = 0     // job was queued but the queue thread had not started it (wake latency)
+    var replacedGap = StageStat()    // submit interval of the replacing frame
+    var replacedAge = StageStat()    // how long the replaced frame had been waiting
+
+    static let burstGapMs = 4.0
+}
+
 nonisolated final class PyroWaveDecoder: @unchecked Sendable {
 
     /// Cumulative counters, for the HUD (D6) and tests.
@@ -34,6 +80,9 @@ nonisolated final class PyroWaveDecoder: @unchecked Sendable {
         /// frames, in milliseconds. `decodeAvgMs` is the per-frame average.
         var gpuMsTotal = 0.0
         var gpuMsMax = 0.0
+        /// Cumulative per-stage CPU and scheduling time (D7). Plain arithmetic on clock reads,
+        /// so it is cheap enough to stay on in Release; only DEBUG builds ever print it.
+        var stages = PyroWaveStageTimes()
 
         var decodeAvgMs: Double { decoded > 0 ? gpuMsTotal / Double(decoded) : 0 }
     }
@@ -68,8 +117,37 @@ nonisolated final class PyroWaveDecoder: @unchecked Sendable {
     private var counters = Counters()
     private var loggedRejects = 0
     private var reportedFirstFrame = false
+    // Stage timing (D7). Guarded by `lock`.
+    private var window = PyroWaveStageTimes()
+    private var lastSubmitTime: Double?
+    private var processStart: Double?
 
     var counterSnapshot: Counters { lock.withLock { counters } }
+
+    /// Stage timings since the previous call (the 1 Hz DEBUG stats line); resets the window.
+    func takeStageWindow() -> PyroWaveStageTimes {
+        lock.withLock {
+            let w = window
+            window = PyroWaveStageTimes()
+            return w
+        }
+    }
+
+    /// Applies `body` to the cumulative stage times and to the current window. Caller holds `lock`.
+    private func updateStages(_ body: (inout PyroWaveStageTimes) -> Void) {
+        body(&counters.stages)
+        body(&window)
+    }
+
+    /// Receive-thread cost of one frame, reported by the transport just before `submit`.
+    func recordReceive(trimCopyMs: Double, slowestPacketMs: Double) {
+        lock.withLock {
+            updateStages {
+                $0.rxTrimCopy.add(trimCopyMs)
+                $0.rxPacket.add(slowestPacketMs)
+            }
+        }
+    }
 
     /// Textures come from this pool; tests read them back.
     var framePool: PlanarFramePool { pool }
@@ -79,15 +157,8 @@ nonisolated final class PyroWaveDecoder: @unchecked Sendable {
     init(device mtlDevice: MTLDevice, format: PyroWaveStreamFormat,
          storageMode: MTLStorageMode = .private,
          color: PlanarColorParams? = nil) throws {
-        guard format.width > 0, format.height > 0,
-              format.width <= 16384, format.height <= 16384 else {
-            throw PyroWaveError.invalidFormat("size \(format.width)x\(format.height)")
-        }
-        guard format.chroma444 || (format.width % 2 == 0 && format.height % 2 == 0) else {
-            throw PyroWaveError.invalidFormat("4:2:0 needs even dimensions, got \(format.width)x\(format.height)")
-        }
-        guard format.bitDepth == 8 || format.bitDepth == 10 else {
-            throw PyroWaveError.invalidFormat("bit depth \(format.bitDepth)")
+        if let problem = format.validationFailure {
+            throw PyroWaveError.invalidFormat(problem)
         }
         guard let queue = mtlDevice.makeCommandQueue() else {
             throw PyroWaveError.failed("makeCommandQueue", code: 0)
@@ -123,14 +194,28 @@ nonisolated final class PyroWaveDecoder: @unchecked Sendable {
 
     /// Called from the receive thread. Never blocks on the GPU.
     func submit(frame: Data, pts: CMTime) {
-        let job = Job(data: frame, pts: pts, submitTime: CACurrentMediaTime())
+        let now = CACurrentMediaTime()
+        let job = Job(data: frame, pts: pts, submitTime: now)
         var schedule = false
         var replaced = false
         lock.withLock {
             counters.submitted += 1
-            if pending != nil {
+            let gapMs = lastSubmitTime.map { (now - $0) * 1000 }
+            lastSubmitTime = now
+            if let gapMs { updateStages { $0.gap.add(gapMs) } }
+            if let old = pending {
                 counters.mailboxReplaced += 1
                 replaced = true
+                let busy = processStart != nil
+                let ageMs = (now - old.submitTime) * 1000
+                updateStages {
+                    if busy { $0.replacedWhileProcessing += 1 } else { $0.replacedWhileWaiting += 1 }
+                    if let gapMs {
+                        if gapMs < PyroWaveStageTimes.burstGapMs { $0.replacedBurst += 1 }
+                        $0.replacedGap.add(gapMs)
+                    }
+                    $0.replacedAge.add(ageMs)
+                }
             }
             pending = job
             if !drainScheduled {
@@ -165,10 +250,19 @@ nonisolated final class PyroWaveDecoder: @unchecked Sendable {
     }
 
     private func process(_ job: Job) {
+        let t0 = CACurrentMediaTime()
+        lock.withLock {
+            processStart = t0
+            updateStages { $0.queueWait.add((t0 - job.submitTime) * 1000) }
+        }
+        defer { lock.withLock { processStart = nil } }
+
         // 1. Validate and split into records (padding stripped).
         let parsed = job.data.withUnsafeBytes {
             PyroWaveRecordParser.parse($0, expected: format)
         }
+        let t1 = CACurrentMediaTime()
+        lock.withLock { updateStages { $0.parse.add((t1 - t0) * 1000) } }
         let frame: PyroWaveRecordParser.Frame
         switch parsed {
         case .success(let f):
@@ -205,6 +299,9 @@ nonisolated final class PyroWaveDecoder: @unchecked Sendable {
             return
         }
 
+        let t2 = CACurrentMediaTime()
+        lock.withLock { updateStages { $0.push.add((t2 - t1) * 1000) } }
+
         // 5. Output textures.
         guard let planar = pool.acquire() else {
             reject(.pool, nil)
@@ -231,12 +328,24 @@ nonisolated final class PyroWaveDecoder: @unchecked Sendable {
 
         let pts = job.pts
         let submitTime = job.submitTime
+        let commitTime = CACurrentMediaTime()   // within microseconds of commit()
         cb.addCompletedHandler { [self] buffer in
             guard buffer.status == .completed else {
                 reject(.gpu, "command buffer status \(buffer.status.rawValue): \(String(describing: buffer.error))")
                 return
             }
+            let handlerTime = CACurrentMediaTime()
             let gpuMs = (buffer.gpuEndTime - buffer.gpuStartTime) * 1000
+            lock.withLock {
+                updateStages {
+                    if buffer.gpuStartTime > commitTime {
+                        $0.commitToGPU.add((buffer.gpuStartTime - commitTime) * 1000)
+                    }
+                    $0.gpu.add(gpuMs)
+                    $0.completionLag.add(max(0, (handlerTime - buffer.gpuEndTime) * 1000))
+                    $0.total.add((handlerTime - submitTime) * 1000)
+                }
+            }
             onGPUTime?(gpuMs)
             let first: Bool = lock.withLock {
                 counters.decoded += 1
@@ -255,6 +364,8 @@ nonisolated final class PyroWaveDecoder: @unchecked Sendable {
             onFrameDecoded?(planar, pts)
         }
         cb.commit()
+        let t3 = CACurrentMediaTime()
+        lock.withLock { updateStages { $0.encode.add((t3 - t2) * 1000) } }
     }
 
     private enum RejectKind { case parse, push, incomplete, pool, gpu }

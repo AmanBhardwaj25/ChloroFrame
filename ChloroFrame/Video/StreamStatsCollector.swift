@@ -74,6 +74,9 @@ struct StreamStats {
     // PyroWave decoder counters. nil for every other codec, which is how the HUD knows to
     // hide them.
     var pyroWave: PyroWaveDecoder.Counters? = nil
+    // The host's advertised PyroWave bitstream id differs from the vendored one (decision Q2:
+    // warn and continue). Shown as a HUD line, not logged.
+    var pyroWaveBitstreamMismatch: Bool = false
 }
 
 // MARK: - Collector
@@ -123,6 +126,13 @@ final class StreamStatsCollector {
     // PyroWave decoder counters, pulled on each tick. Set by StreamTransport only for PyroWave
     // sessions; nil otherwise, so no other codec's stats or logs change.
     var pyroWaveStatsProvider: (() -> PyroWaveDecoder.Counters?)?
+
+    // Stage timings since the previous tick (D7). Only the DEBUG stats line reads this, so the
+    // transport sets it in DEBUG builds only.
+    var pyroWaveStageProvider: (() -> PyroWaveStageTimes?)?
+
+    // Set once by StreamTransport from the negotiated descriptor.
+    var pyroWaveBitstreamMismatch: Bool = false
 
     // ── Lock-protected accumulator ────────────────────────────────────────
 
@@ -375,13 +385,26 @@ final class StreamStatsCollector {
                 pw.poolExhausted, pw.mailboxReplaced, pw.gpuFailures, pw.decodeAvgMs, pw.gpuMsMax)
         }
         SessionLog.shared.line(vLine + "  ||  " + aLine + pwLine)
+        // D7 stage timings for the same 1 s window: avg/max in ms.
+        var stageLine = ""
+        #if DEBUG
+        if let st = pyroWaveStageProvider?() {
+            func f(_ x: StageStat) -> String { String(format: "%.2f/%.2f", x.avg, x.max) }
+            stageLine = " | stg gap=\(f(st.gap)) rxcopy=\(f(st.rxTrimCopy)) rxpkt=\(f(st.rxPacket)) "
+                + "qwait=\(f(st.queueWait)) parse=\(f(st.parse)) push=\(f(st.push)) enc=\(f(st.encode)) "
+                + "c2g=\(f(st.commitToGPU)) gpu=\(f(st.gpu)) lag=\(f(st.completionLag)) tot=\(f(st.total))"
+                + " | repl burst=\(st.replacedBurst) busy=\(st.replacedWhileProcessing) "
+                + "wait=\(st.replacedWhileWaiting) gap=\(f(st.replacedGap)) age=\(f(st.replacedAge))"
+        }
+        #endif
         // DEBUG builds only: the same 1 Hz line, plus cumulative frame counts, to
         // /tmp/chloroframe-debug.log. Compiled out of Release.
         #if DEBUG
         DebugFileLog.writeAsync("[stats] " + vLine + pwLine
             + String(format: " | frames ok=%ld lost=%ld decoded=%ld dropped=%ld pkts=%ld fec=%ld",
                      snap.framesAssembled, snap.framesLost, snap.framesDecoded, snap.framesDropped,
-                     snap.packetsReceived, snap.packetsRecovered))
+                     snap.packetsReceived, snap.packetsRecovered)
+            + stageLine)
         #endif
 
         current = StreamStats(
@@ -429,7 +452,8 @@ final class StreamStatsCollector {
             audioReorder:      audioRx?.reorder ?? 0,
             audioLatencyClampMs: audio?.latencyClampMs ?? 0,
             audioTargetMs:     audio?.targetMs ?? 0,
-            pyroWave:          pw
+            pyroWave:          pw,
+            pyroWaveBitstreamMismatch: pyroWaveBitstreamMismatch
         )
     }
 }

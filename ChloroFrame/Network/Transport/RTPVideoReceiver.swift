@@ -8,6 +8,7 @@ import Network
 import CoreMedia
 import VideoToolbox
 import os
+import QuartzCore
 
 // Receives RTP video datagrams from Apollo.
 //
@@ -47,6 +48,10 @@ final class RTPVideoReceiver {
     // PyroWave only; nil for every other codec.
     private let pyroWaveDecoder: PyroWaveDecoder?
     private var loggedPyroWaveTrimFailures = 0
+    // Slowest addPacket call since the last frame was handed to the decoder (PyroWave, D7).
+    // Written by the receive thread only, but read from the frame callback, which runs on the
+    // same thread; the lock just keeps the type checker honest about sharing.
+    private let slowestPacketMs = OSAllocatedUnfairLock(initialState: 0.0)
 
     private var vpsData: Data?   // HEVC only
     private var spsData: Data?
@@ -124,11 +129,34 @@ final class RTPVideoReceiver {
 
         // Opt-H: 4 MB receive buffer. At 120 fps × ~20 pkts × ~1.4 KB, a 30 ms
         // preemption spike is ~100 KB — the headroom absorbs IDR bursts on top.
-        var rcvBuf: Int32 = 4 * 1024 * 1024
-        setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &rcvBuf, socklen_t(MemoryLayout<Int32>.size))
+        // PyroWave (D7) asks for 8 MB first: a frame is 400+ KB and the stream is 30x the
+        // packet rate, so a 4 MB buffer is only about 100 ms of video at 290 Mbps.
         var actualBuf: Int32 = 0
         var actualLen = socklen_t(MemoryLayout<Int32>.size)
-        getsockopt(fd, SOL_SOCKET, SO_RCVBUF, &actualBuf, &actualLen)
+        if videoCodec == .pyrowave {
+            // macOS rejects a reservation above roughly 7/8 of kern.ipc.maxsockbuf (ENOBUFS), and a
+            // rejected call leaves the small default in place, so step down instead of giving up.
+            var attempts: [String] = []
+            for megabytes in [8, 6, 4] {
+                var rcvBuf = Int32(megabytes * 1024 * 1024)
+                let rc = setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &rcvBuf, socklen_t(MemoryLayout<Int32>.size))
+                attempts.append("\(megabytes)MB=" + (rc == 0 ? "ok" : "errno\(errno)"))
+                if rc == 0 { break }
+            }
+            getsockopt(fd, SOL_SOCKET, SO_RCVBUF, &actualBuf, &actualLen)
+            #if DEBUG
+            var maxSockBuf: Int = 0
+            var maxLen = MemoryLayout<Int>.size
+            let sysctlRC = sysctlbyname("kern.ipc.maxsockbuf", &maxSockBuf, &maxLen, nil, 0)
+            DebugFileLog.write("[RTPVideoReceiver] PyroWave SO_RCVBUF attempts \(attempts.joined(separator: ", ")) "
+                             + "effective=\(actualBuf) kern.ipc.maxsockbuf="
+                             + (sysctlRC == 0 ? "\(maxSockBuf)" : "unreadable"))
+            #endif
+        } else {
+            var rcvBuf: Int32 = 4 * 1024 * 1024
+            setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &rcvBuf, socklen_t(MemoryLayout<Int32>.size))
+            getsockopt(fd, SOL_SOCKET, SO_RCVBUF, &actualBuf, &actualLen)
+        }
 
         // Opt-A equivalent of NWParameters.serviceClass = .interactiveVideo:
         // NET_SERVICE_TYPE_VI marks DSCP AF41 → WMM AC_VI on Wi-Fi.
@@ -227,14 +255,25 @@ final class RTPVideoReceiver {
     private func receiveLoop(fd: Int32) {
         var buf = [UInt8](repeating: 0, count: 65536)
         var transientErrorCount = 0
+        // PyroWave only (D7): time each addPacket so the slowest one per frame is known.
+        let timePackets = videoCodec == .pyrowave
         while !stopping.withLock({ $0 }) {
             let n = recv(fd, &buf, buf.count, 0)
             if n > 0 {
                 stats?.recordPacket(bytes: n)
                 // The queue copies what it keeps before returning, so the receive
                 // buffer can be handed over as a borrowed view — no Data per datagram.
-                buf.withUnsafeBytes { raw in
-                    queue.addPacket(UnsafeRawBufferPointer(rebasing: raw[0..<n]))
+                if timePackets {
+                    let t = CACurrentMediaTime()
+                    buf.withUnsafeBytes { raw in
+                        queue.addPacket(UnsafeRawBufferPointer(rebasing: raw[0..<n]))
+                    }
+                    let ms = (CACurrentMediaTime() - t) * 1000
+                    slowestPacketMs.withLock { if ms > $0 { $0 = ms } }
+                } else {
+                    buf.withUnsafeBytes { raw in
+                        queue.addPacket(UnsafeRawBufferPointer(rebasing: raw[0..<n]))
+                    }
                 }
             } else if n == 0 {
                 // Zero-length datagram (Apollo never sends these) or shutdown wakeup;
@@ -439,7 +478,15 @@ final class RTPVideoReceiver {
             }
         case .success(let validLen):
             framesProcessed += 1
+            let copyStart = CACurrentMediaTime()
             let frame = Data(buffer: UnsafeBufferPointer(rebasing: frameBytes[0..<validLen]))
+            let copyMs = (CACurrentMediaTime() - copyStart) * 1000
+            let slowest = slowestPacketMs.withLock { v -> Double in
+                let m = v
+                v = 0
+                return m
+            }
+            pyroWaveDecoder.recordReceive(trimCopyMs: copyMs, slowestPacketMs: slowest)
             pyroWaveDecoder.submit(frame: frame, pts: CMTime(value: extendedRtpTs, timescale: 90_000))
         }
     }

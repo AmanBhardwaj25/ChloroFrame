@@ -26,7 +26,7 @@ struct StreamStatsHUD: View {
             decodeSection(s)
             if let pw = s.pyroWave {
                 Divider().background(Color.white.opacity(0.15)).padding(.vertical, 6)
-                pyroWaveSection(pw)
+                pyroWaveSection(pw, bitstreamMismatch: s.pyroWaveBitstreamMismatch)
             }
             Divider().background(Color.white.opacity(0.15)).padding(.vertical, 6)
             renderSection(s)
@@ -101,9 +101,14 @@ struct StreamStatsHUD: View {
     }
 
     // Shown only while a PyroWave stream is active (the collector's provider is nil otherwise).
-    private func pyroWaveSection(_ c: PyroWaveDecoder.Counters) -> some View {
+    private func pyroWaveSection(_ c: PyroWaveDecoder.Counters, bitstreamMismatch: Bool) -> some View {
         VStack(alignment: .leading, spacing: 3) {
             label("PYROWAVE")
+            if bitstreamMismatch {
+                Text("Host PyroWave version differs; artifacts possible")
+                    .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                    .foregroundStyle(.orange)
+            }
             row("GPU decode", String(format: "avg %.2f ms  max %.2f ms", c.decodeAvgMs, c.gpuMsMax))
             row("Rejects",    "\(c.parseRejects) parse  ·  \(c.pushRejects) push")
             row("Incomplete", "\(c.incomplete)")

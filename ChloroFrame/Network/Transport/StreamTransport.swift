@@ -95,6 +95,7 @@ final class StreamTransport {
                 // Stop any receivers/engine that may have been started before the throw.
                 pyroWaveDecoder?.onFrameDecoded = nil; pyroWaveDecoder = nil
                 stats.pyroWaveStatsProvider = nil
+                stats.pyroWaveStageProvider = nil
                 videoReceiver?.stop(); videoReceiver = nil
                 audioReceiver?.stop(); audioReceiver = nil
                 audioEngine?.stop();   audioEngine   = nil
@@ -245,6 +246,12 @@ final class StreamTransport {
         }
         let format = PyroWaveStreamFormat(width: streamWidth, height: streamHeight,
                                           chroma444: desc.chroma444, bitDepth: 8)
+        // D7 resolution sanity: 4:2:0 planes need even dimensions. HostConnectionView already
+        // rounds overrides to even; this refuses a stream that slipped past it, in every build.
+        if let problem = format.validationFailure {
+            DebugFileLog.write("[ChloroFrame][pyrowave] refusing stream format: \(problem)")
+            throw PyroWaveError.invalidFormat(problem)
+        }
         let cscMode = SDPBuilder.encoderCscMode(codec: .pyrowave, hdr: false)
         let color = PlanarColorParams.forEncoderCscMode(cscMode, bitDepth: format.bitDepth, hdr: false)
         // Off the main actor: the first creation per MTLDevice compiles the decode shaders.
@@ -256,6 +263,10 @@ final class StreamTransport {
             self?.onPlanarFrame?(frame, pts)
         }
         stats.pyroWaveStatsProvider = { [weak decoder] in decoder?.counterSnapshot }
+        stats.pyroWaveBitstreamMismatch = desc.pyroWaveBitstreamMismatch
+        #if DEBUG
+        stats.pyroWaveStageProvider = { [weak decoder] in decoder?.takeStageWindow() }
+        #endif
         #if DEBUG
         DebugFileLog.write("[ChloroFrame][pyrowave] decoder ready \(format.width)x\(format.height) "
                          + "chroma444=\(format.chroma444) bitDepth=\(format.bitDepth) cscMode=\(cscMode) "
@@ -278,6 +289,7 @@ final class StreamTransport {
         stats.audioStatsProvider = nil
         stats.audioReceiverStatsProvider = nil
         stats.pyroWaveStatsProvider = nil
+        stats.pyroWaveStageProvider = nil
         pyroWaveDecoder?.onFrameDecoded = nil; pyroWaveDecoder = nil
         videoReceiver?.stop();          videoReceiver      = nil
         audioReceiver?.stop();          audioReceiver      = nil
