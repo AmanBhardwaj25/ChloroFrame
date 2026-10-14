@@ -28,6 +28,25 @@ nonisolated struct PyroWaveStreamFormat: Equatable {
     }
 }
 
+/// Which data payloads of an assembled frame were replaced by zeros (D10), and which payloads
+/// start with a record. Built by `RtpVideoQueue`, consumed by `PyroWaveRecordParser`.
+/// Index `k` describes the `k`th data payload of the frame in frame order; it spans the bytes
+/// `payloadStarts[k]` up to `payloadStarts[k + 1]` (or the end of the frame).
+nonisolated struct PyroWaveLossMap: Equatable {
+    var payloadStarts: [Int]
+    var lost: [Bool]
+    var recordStart: [Bool]
+
+    init(payloadStarts: [Int], lost: [Bool], recordStart: [Bool]) {
+        precondition(payloadStarts.count == lost.count && lost.count == recordStart.count)
+        self.payloadStarts = payloadStarts
+        self.lost = lost
+        self.recordStart = recordStart
+    }
+
+    var lostCount: Int { lost.reduce(0) { $0 + ($1 ? 1 : 0) } }
+}
+
 nonisolated enum PyroWaveRecordParser {
     struct Frame: Equatable {
         var sequence: UInt8            // 3-bit sequence from the sequence header
@@ -35,6 +54,10 @@ nonisolated enum PyroWaveRecordParser {
         var records: [Range<Int>]      // sequence header first, then block records, in arrival order
         var blockRecordCount: Int
         var paddingBytes: Int          // stats only
+        /// Records whose header arrived but whose bytes touch a lost payload (loss map only).
+        var skippedRecords = 0
+        /// Times parsing had to jump to the next record-start payload because a header was lost.
+        var resyncs = 0
     }
 
     enum Failure: Error, Equatable {
@@ -64,6 +87,21 @@ nonisolated enum PyroWaveRecordParser {
     /// in `BitstreamParser::push_packet`; a failure there also drops the frame.
     static func parse(_ bytes: UnsafeRawBufferPointer,
                       expected: PyroWaveStreamFormat) -> Result<Frame, Failure> {
+        parse(bytes, expected: expected, lossMap: nil)
+    }
+
+    /// Same rules as `parse(_:expected:)`, for a frame whose lost payloads were zero filled.
+    ///
+    /// - A record whose bytes touch a lost payload is skipped; it never reaches the decoder.
+    /// - A record whose header arrived but whose payload did not has a known end, so parsing
+    ///   continues after it.
+    /// - When a header itself was lost, parsing resumes at the next received payload flagged as
+    ///   starting with a record. If there is none, the rest of the frame is given up.
+    /// - The sequence header must be intact; otherwise the frame fails.
+    /// With `lossMap == nil` this is exactly the strict whole-frame parser.
+    static func parse(_ bytes: UnsafeRawBufferPointer,
+                      expected: PyroWaveStreamFormat,
+                      lossMap: PyroWaveLossMap?) -> Result<Frame, Failure> {
         let count = bytes.count
         if count % 4 != 0 { return .failure(.notWordAligned) }
         if count < headerBytes { return .failure(.missingSequenceHeader) }
@@ -71,6 +109,50 @@ nonisolated enum PyroWaveRecordParser {
         // A packet count in a length-prefixed frame never has bit 31 set, while a
         // record-framed frame starts with a sequence header or a padding record.
         if readWord(bytes, 0) & 0x8000_0000 == 0 { return .failure(.lengthPrefixedFraming) }
+
+        // Merged byte ranges of the lost payloads, clamped to the frame.
+        var lostRanges: [Range<Int>] = []
+        if let map = lossMap {
+            for k in 0..<map.payloadStarts.count where map.lost[k] {
+                let lower = max(0, map.payloadStarts[k])
+                let end = k + 1 < map.payloadStarts.count ? map.payloadStarts[k + 1] : count
+                let upper = min(count, end)
+                guard lower < upper else { continue }
+                if let last = lostRanges.last, last.upperBound >= lower {
+                    lostRanges[lostRanges.count - 1] = last.lowerBound..<max(last.upperBound, upper)
+                } else {
+                    lostRanges.append(lower..<upper)
+                }
+            }
+        }
+        var lostCursor = 0
+        /// True when any byte of `range` is in a lost payload. Queries come in increasing order.
+        func touchesLost(_ range: Range<Int>) -> Bool {
+            while lostCursor < lostRanges.count, lostRanges[lostCursor].upperBound <= range.lowerBound {
+                lostCursor += 1
+            }
+            return lostCursor < lostRanges.count && lostRanges[lostCursor].lowerBound < range.upperBound
+        }
+        /// Start of the first received payload after `pos` that begins with a record.
+        func nextRecordStart(after pos: Int) -> Int? {
+            guard let map = lossMap else { return nil }
+            var lo = 0, hi = map.payloadStarts.count
+            while lo < hi {
+                let mid = (lo + hi) / 2
+                if map.payloadStarts[mid] > pos { hi = mid } else { lo = mid + 1 }
+            }
+            var k = lo
+            while k < map.payloadStarts.count {
+                let start = map.payloadStarts[k]
+                if start >= count { return nil }
+                // `start > pos` keeps parsing moving forward whatever the map says.
+                if start > pos && !map.lost[k] && map.recordStart[k] && start % 4 == 0 { return start }
+                k += 1
+            }
+            return nil
+        }
+        var skippedRecords = 0
+        var resyncs = 0
 
         var records: [Range<Int>] = []
         var sequenceHeaderSeen = false
@@ -81,7 +163,20 @@ nonisolated enum PyroWaveRecordParser {
         var pos = 0
 
         while pos < count {
-            if count - pos < headerBytes { return .failure(.truncatedRecord(offset: pos)) }
+            if count - pos < headerBytes {
+                // A tail shorter than a header can only be what a lost payload left behind.
+                if lossMap != nil && sequenceHeaderSeen && touchesLost(pos..<count) { break }
+                return .failure(.truncatedRecord(offset: pos))
+            }
+            if lossMap != nil && touchesLost(pos..<pos + headerBytes) {
+                // The header (or part of it) was in a lost payload, so this record's length is
+                // unknown. Without an intact sequence header nothing can be decoded.
+                if !sequenceHeaderSeen { return .failure(.missingSequenceHeader) }
+                guard let resume = nextRecordStart(after: pos) else { break }
+                resyncs += 1
+                pos = resume
+                continue
+            }
             let w0 = readWord(bytes, pos)
             let w1 = readWord(bytes, pos + 4)
 
@@ -124,6 +219,11 @@ nonisolated enum PyroWaveRecordParser {
             let length = payloadWords * 4
             if length > count - pos { return .failure(.truncatedRecord(offset: pos)) }
             if (w0 >> 28) & 0x7 != sequence { return .failure(.sequenceMismatch(offset: pos)) }
+            if lossMap != nil && touchesLost(pos..<pos + length) {
+                skippedRecords += 1
+                pos += length
+                continue
+            }
             records.append(pos..<pos + length)
             blockRecords += 1
             pos += length
@@ -134,7 +234,9 @@ nonisolated enum PyroWaveRecordParser {
                               totalBlocks: totalBlocks,
                               records: records,
                               blockRecordCount: blockRecords,
-                              paddingBytes: paddingBytes))
+                              paddingBytes: paddingBytes,
+                              skippedRecords: skippedRecords,
+                              resyncs: resyncs))
     }
 
     /// Merges ranges that touch (no padding between them) so the decoder is pushed

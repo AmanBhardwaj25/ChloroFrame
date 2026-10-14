@@ -79,7 +79,11 @@ final class RTPVideoReceiver {
         self.videoCodec = videoCodec
         self.streamFps = streamFps > 0 ? streamFps : 120
         let useSwift = UserDefaults.standard.bool(forKey: "useSwiftFEC")
-        queue = RtpVideoQueue(packetSize: packetSize, useSwiftFEC: useSwift)
+        // PyroWave partial delivery (D10). `defaults write <bundle id> pyroWavePartialDelivery -bool NO`
+        // restores whole-frame behavior for an A/B run on the same build.
+        let partial = videoCodec == .pyrowave
+            && (UserDefaults.standard.object(forKey: "pyroWavePartialDelivery") as? Bool ?? true)
+        queue = RtpVideoQueue(packetSize: packetSize, useSwiftFEC: useSwift, partialDelivery: partial)
     }
 
     /// Binds the UDP socket and sends the first SS_PING before returning.
@@ -258,6 +262,20 @@ final class RTPVideoReceiver {
         // PyroWave only (D7): time each addPacket so the slowest one per frame is known.
         let timePackets = videoCodec == .pyrowave
         while !stopping.withLock({ $0 }) {
+            // PyroWave partial delivery: while a silence deadline is armed (only between the last
+            // data packet of a frame with holes and the next frame, so a few times a minute on a
+            // good link) wait with a timeout instead of blocking in recv(). poll() reports
+            // readable data first, so the socket is drained before the deadline can expire.
+            if let deadline = queue.pendingDeadline {
+                let remainingMs = Int32(max(0, ((deadline - CACurrentMediaTime()) * 1000).rounded(.up)))
+                var pfd = pollfd(fd: fd, events: Int16(POLLIN), revents: 0)
+                let ready = poll(&pfd, 1, remainingMs)
+                if ready == 0 {
+                    queue.expirePending()
+                    continue
+                }
+                if ready < 0 && errno == EINTR { continue }
+            }
             let n = recv(fd, &buf, buf.count, 0)
             if n > 0 {
                 stats?.recordPacket(bytes: n)
@@ -487,7 +505,8 @@ final class RTPVideoReceiver {
                 return m
             }
             pyroWaveDecoder.recordReceive(trimCopyMs: copyMs, slowestPacketMs: slowest)
-            pyroWaveDecoder.submit(frame: frame, pts: CMTime(value: extendedRtpTs, timescale: 90_000))
+            pyroWaveDecoder.submit(frame: frame, pts: CMTime(value: extendedRtpTs, timescale: 90_000),
+                                   lossMap: meta.lossMap)
         }
     }
 

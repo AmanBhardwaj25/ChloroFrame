@@ -39,6 +39,11 @@ struct StreamStats {
     var framesLost: Int = 0
     var framesDecoded: Int = 0
     var framesDropped: Int = 0
+    // PyroWave partial delivery (D10): frames handed to the decoder with zero-filled holes.
+    // These are counted in framesAssembled, never in framesLost.
+    var framesPartial: Int = 0
+    var partialPerMinute: Double = 0     // framesPartial over the session so far
+    var lostPerMinute: Double = 0        // framesLost over the session so far
 
     // Derived quality metrics
     var lossPercent: Double = 0      // frames lost / (assembled + lost)
@@ -146,6 +151,8 @@ final class StreamStatsCollector {
         var framesLost: Int = 0
         var framesDecoded: Int = 0
         var framesDropped: Int = 0
+        var framesPartial: Int = 0
+        var packetsLostInPartial: Int = 0
 
         // RFC 3550 §6.4.1 running jitter in 90 kHz ticks
         var jitterEst: Double = 0
@@ -181,11 +188,13 @@ final class StreamStatsCollector {
     private var acc = Acc()
     private var timer: Timer?
     private var lastSnapshotTime: Double = 0
+    private var sessionStartTime: Double = 0
 
     // MARK: - Lifecycle
 
     func start() {
         lastSnapshotTime = CACurrentMediaTime()
+        sessionStartTime = lastSnapshotTime
         SessionLog.shared.begin(header:
             "session start  req=\(requestedWidth)x\(requestedHeight)@\(requestedFps) "
             + "\(requestedBitrateKbps / 1000)Mbps codec=\(requestedCodec) hdr=\(requestedHdr)\n"
@@ -223,6 +232,10 @@ final class StreamStatsCollector {
         lock.withLock { acc.packetsReceived }
     }
 
+    /// Cumulative partial and lost frame counts (tests and the DEBUG line read the snapshot instead).
+    var framesPartialSoFar: Int { lock.withLock { acc.framesPartial } }
+    var framesLostSoFar: Int { lock.withLock { acc.framesLost } }
+
     func recordPacketsRecovered(_ n: Int) {
         lock.withLock { acc.packetsRecovered += n }
     }
@@ -250,6 +263,15 @@ final class StreamStatsCollector {
 
     func recordFrameLost() {
         lock.withLock { acc.framesLost += 1 }
+    }
+
+    /// A PyroWave frame was delivered with `lostPackets` data packets replaced by zeros (D10).
+    /// It is also counted by `recordFrameAssembled`; it is not a lost frame.
+    func recordFramePartial(lostPackets: Int) {
+        lock.withLock {
+            acc.framesPartial += 1
+            acc.packetsLostInPartial += lostPackets
+        }
     }
 
     /// Call with the elapsed wall-clock time for the VTDecompressionSession call.
@@ -380,10 +402,12 @@ final class StreamStatsCollector {
         var pwLine = ""
         if let pw {
             pwLine = String(format:
-                "  ||  PYROWAVE sub=%ld dec=%ld parseRej=%ld pushRej=%ld incomplete=%ld pool=%ld replaced=%ld gpuFail=%ld gpu=%.2f/%.2fms",
+                "  ||  PYROWAVE sub=%ld dec=%ld parseRej=%ld pushRej=%ld incomplete=%ld pool=%ld replaced=%ld gpuFail=%ld gpu=%.2f/%.2fms partial=%ld skipped=%ld",
                 pw.submitted, pw.decoded, pw.parseRejects, pw.pushRejects, pw.incomplete,
-                pw.poolExhausted, pw.mailboxReplaced, pw.gpuFailures, pw.decodeAvgMs, pw.gpuMsMax)
+                pw.poolExhausted, pw.mailboxReplaced, pw.gpuFailures, pw.decodeAvgMs, pw.gpuMsMax,
+                pw.partialDecoded, pw.blocksSkipped)
         }
+        let sessionMinutes = max(now - sessionStartTime, 1) / 60.0
         SessionLog.shared.line(vLine + "  ||  " + aLine + pwLine)
         // D7 stage timings for the same 1 s window: avg/max in ms.
         var stageLine = ""
@@ -401,9 +425,10 @@ final class StreamStatsCollector {
         // /tmp/chloroframe-debug.log. Compiled out of Release.
         #if DEBUG
         DebugFileLog.writeAsync("[stats] " + vLine + pwLine
-            + String(format: " | frames ok=%ld lost=%ld decoded=%ld dropped=%ld pkts=%ld fec=%ld",
+            + String(format: " | frames ok=%ld lost=%ld decoded=%ld dropped=%ld pkts=%ld fec=%ld partial=%ld lostpkts=%ld",
                      snap.framesAssembled, snap.framesLost, snap.framesDecoded, snap.framesDropped,
-                     snap.packetsReceived, snap.packetsRecovered)
+                     snap.packetsReceived, snap.packetsRecovered,
+                     snap.framesPartial, snap.packetsLostInPartial)
             + stageLine)
         #endif
 
@@ -427,6 +452,9 @@ final class StreamStatsCollector {
             framesLost: snap.framesLost,
             framesDecoded: snap.framesDecoded,
             framesDropped: snap.framesDropped,
+            framesPartial: snap.framesPartial,
+            partialPerMinute: Double(snap.framesPartial) / sessionMinutes,
+            lostPerMinute: Double(snap.framesLost) / sessionMinutes,
             lossPercent: lossPct,
             fecRecoveryPct: fecPct,
             jitterMs: snap.jitterEst / 90.0,

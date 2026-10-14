@@ -26,7 +26,7 @@ struct StreamStatsHUD: View {
             decodeSection(s)
             if let pw = s.pyroWave {
                 Divider().background(Color.white.opacity(0.15)).padding(.vertical, 6)
-                pyroWaveSection(pw, bitstreamMismatch: s.pyroWaveBitstreamMismatch)
+                pyroWaveSection(pw, stats: s, bitstreamMismatch: s.pyroWaveBitstreamMismatch)
             }
             Divider().background(Color.white.opacity(0.15)).padding(.vertical, 6)
             renderSection(s)
@@ -101,7 +101,7 @@ struct StreamStatsHUD: View {
     }
 
     // Shown only while a PyroWave stream is active (the collector's provider is nil otherwise).
-    private func pyroWaveSection(_ c: PyroWaveDecoder.Counters, bitstreamMismatch: Bool) -> some View {
+    private func pyroWaveSection(_ c: PyroWaveDecoder.Counters, stats s: StreamStats, bitstreamMismatch: Bool) -> some View {
         VStack(alignment: .leading, spacing: 3) {
             label("PYROWAVE")
             if bitstreamMismatch {
@@ -111,6 +111,10 @@ struct StreamStatsHUD: View {
             }
             row("GPU decode", String(format: "avg %.2f ms  max %.2f ms", c.decodeAvgMs, c.gpuMsMax))
             row("Rejects",    "\(c.parseRejects) parse  ·  \(c.pushRejects) push")
+            // Partial frames lost only detail and were still shown; lost frames were dropped whole.
+            row("Partial",    String(format: "%.1f /min  ·  %d total  ·  %.1f blocks/frame",
+                                     s.partialPerMinute, c.partialDecoded, c.blocksSkippedPerPartial))
+            row("Lost",       String(format: "%.1f /min  ·  %d total", s.lostPerMinute, s.framesLost))
             row("Incomplete", "\(c.incomplete)")
             row("Pool full",  "\(c.poolExhausted)")
             row("Replaced",   "\(c.mailboxReplaced)  (mailbox)")

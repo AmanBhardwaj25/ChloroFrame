@@ -76,6 +76,11 @@ nonisolated final class PyroWaveDecoder: @unchecked Sendable {
         var poolExhausted = 0
         var mailboxReplaced = 0
         var gpuFailures = 0
+        /// Frames decoded with zero-filled holes (D10) and the block records they were missing,
+        /// summed (`blocksSkipped`) and worst single frame (`blocksSkippedMax`).
+        var partialDecoded = 0
+        var blocksSkipped = 0
+        var blocksSkippedMax = 0
         /// Sum and peak of GPU execution time (`gpuEndTime - gpuStartTime`) over `decoded`
         /// frames, in milliseconds. `decodeAvgMs` is the per-frame average.
         var gpuMsTotal = 0.0
@@ -85,6 +90,9 @@ nonisolated final class PyroWaveDecoder: @unchecked Sendable {
         var stages = PyroWaveStageTimes()
 
         var decodeAvgMs: Double { decoded > 0 ? gpuMsTotal / Double(decoded) : 0 }
+        var blocksSkippedPerPartial: Double {
+            partialDecoded > 0 ? Double(blocksSkipped) / Double(partialDecoded) : 0
+        }
     }
 
     var onFrameDecoded: ((PlanarVideoFrame, CMTime) -> Void)?
@@ -103,6 +111,8 @@ nonisolated final class PyroWaveDecoder: @unchecked Sendable {
         let data: Data
         let pts: CMTime
         let submitTime: Double
+        /// Set when the transport delivered the frame with zero-filled holes (D10).
+        let lossMap: PyroWaveLossMap?
     }
 
     private let device: PyroWaveDevice
@@ -193,9 +203,9 @@ nonisolated final class PyroWaveDecoder: @unchecked Sendable {
     }
 
     /// Called from the receive thread. Never blocks on the GPU.
-    func submit(frame: Data, pts: CMTime) {
+    func submit(frame: Data, pts: CMTime, lossMap: PyroWaveLossMap? = nil) {
         let now = CACurrentMediaTime()
-        let job = Job(data: frame, pts: pts, submitTime: now)
+        let job = Job(data: frame, pts: pts, submitTime: now, lossMap: lossMap)
         var schedule = false
         var replaced = false
         lock.withLock {
@@ -259,7 +269,7 @@ nonisolated final class PyroWaveDecoder: @unchecked Sendable {
 
         // 1. Validate and split into records (padding stripped).
         let parsed = job.data.withUnsafeBytes {
-            PyroWaveRecordParser.parse($0, expected: format)
+            PyroWaveRecordParser.parse($0, expected: format, lossMap: job.lossMap)
         }
         let t1 = CACurrentMediaTime()
         lock.withLock { updateStages { $0.parse.add((t1 - t0) * 1000) } }
@@ -291,7 +301,10 @@ nonisolated final class PyroWaveDecoder: @unchecked Sendable {
         }
 
         // 4. Complete?
-        let ready = allowPartialFrames
+        // A frame the transport delivered with holes is always decoded partially: the queue has
+        // already checked the critical prefix, and PyroWave's own pristine-band check cannot
+        // tell a lost block from an all-zero block that was never sent.
+        let ready = (allowPartialFrames || job.lossMap != nil)
             ? pyrowave_decoder_decode_is_ready_with_sideband(decoder, true, 0, 0.0, nil, 0)
             : pyrowave_decoder_decode_is_ready(decoder, false)
         guard ready else {
@@ -328,6 +341,8 @@ nonisolated final class PyroWaveDecoder: @unchecked Sendable {
 
         let pts = job.pts
         let submitTime = job.submitTime
+        // Blocks the parser could not use: announced by the sequence header, not recovered.
+        let skippedBlocks: Int? = job.lossMap == nil ? nil : max(0, frame.totalBlocks - frame.blockRecordCount)
         let commitTime = CACurrentMediaTime()   // within microseconds of commit()
         cb.addCompletedHandler { [self] buffer in
             guard buffer.status == .completed else {
@@ -349,6 +364,11 @@ nonisolated final class PyroWaveDecoder: @unchecked Sendable {
             onGPUTime?(gpuMs)
             let first: Bool = lock.withLock {
                 counters.decoded += 1
+                if let skippedBlocks {
+                    counters.partialDecoded += 1
+                    counters.blocksSkipped += skippedBlocks
+                    counters.blocksSkippedMax = max(counters.blocksSkippedMax, skippedBlocks)
+                }
                 counters.gpuMsTotal += gpuMs
                 counters.gpuMsMax = max(counters.gpuMsMax, gpuMs)
                 let isFirst = !reportedFirstFrame

@@ -14,6 +14,7 @@
 //  Recovered/sorted data packet payloads arrive via onVideoPacket.
 
 import Foundation
+import QuartzCore
 
 // ─── Packet layout constants ──────────────────────────────────────────────────
 // Apollo always uses FLAG_EXTENSION, so the RTP header is always:
@@ -35,6 +36,8 @@ private let kFrameHeaderSizeExtended: Int  = 44   // first byte 0x81, targeting 
 private let kFlagSOF: UInt8 = 0x04
 private let kFlagEOF: UInt8 = 0x02
 private let kFlagPIC: UInt8 = 0x01
+// NV_VIDEO_PACKET.extraFlags (header byte +9): the payload starts with a PyroWave record.
+private let kExtraFlagRecordStart: UInt8 = 0x80
 
 // ─── Frame metadata ───────────────────────────────────────────────────────────
 
@@ -49,6 +52,9 @@ nonisolated struct FrameMeta: Equatable {
     /// Header bytes 6-7 (LE16): number of leading packets that carry the PyroWave critical
     /// (coarsest) data, 0 when unknown. Used by partial-frame recovery (D10).
     var pyroWaveCriticalPackets: Int = 0
+    /// Set only for a PyroWave frame that is being delivered with zero-filled holes (D10).
+    /// nil for every complete frame and for every other codec.
+    var lossMap: PyroWaveLossMap? = nil
 
     /// Parses the frame header whose first byte is at `headerOffset` in `slot`. Every read is
     /// bounds-checked. Only the standard 8-byte header (any first byte but 0x81) carries
@@ -81,6 +87,17 @@ final class RtpVideoQueue {
     let packetSize: Int      // Bytes after RTP header: NV_VIDEO_PACKET + compressed payload.
     let blockSize: Int       // = packetSize + kRtpHeaderSize (full datagram size for RS FEC).
     let useSwiftFEC: Bool
+    /// PyroWave only (D10): deliver a frame whose blocks lost non-critical packets, with the
+    /// holes zero-filled and described by `FrameMeta.lossMap`. False keeps the whole-frame
+    /// behavior of every other codec.
+    let partialDelivery: Bool
+
+    /// Monotonic seconds. Injectable so tests can step time.
+    var clock: () -> Double = { CACurrentMediaTime() }
+
+    /// How long the final block of a frame must be silent, after its last data packet arrived,
+    /// before it is delivered without waiting for the next frame (protocol doc, "Partial frames").
+    static let silenceDeadlineSeconds = 0.001
 
     // Emitted once per fully assembled frame with a borrowed view of the complete
     // elementary byte stream (all blocks, in sequence order).
@@ -152,6 +169,18 @@ final class RtpVideoQueue {
     // Short-header fields beyond frameType (PyroWave). Reset together with currentFrameType.
     private var currentLastPayloadLen = 0
     private var currentCriticalPackets = 0
+    // PyroWave partial delivery: the frame's first packet used the 8-byte short header and was
+    // flagged as starting with a record. Set when block 0's first packet is staged.
+    private var currentFrameFlagsUsable = false
+
+    // Partial delivery (PyroWave only). One entry per staged data payload of the current
+    // frame, in frame order: byte offset in `frameAssembly`, lost, record-start flag.
+    private var payloadStarts: [Int] = []
+    private var payloadLost: [Bool] = []
+    private var payloadRecordStart: [Bool] = []
+    private var payloadLostCount = 0
+    /// When the silence deadline expires (`clock()` seconds), or nil when none is armed.
+    private(set) var pendingDeadline: Double?
 
     private var packetLogCount = 0
     private var blockLogCount = 0
@@ -159,8 +188,9 @@ final class RtpVideoQueue {
     private var fecLogCount = 0
     private var rejectLogCount = 0
 
-    init(packetSize: Int = 1392, useSwiftFEC: Bool = false) {
+    init(packetSize: Int = 1392, useSwiftFEC: Bool = false, partialDelivery: Bool = false) {
         self.packetSize = packetSize
+        self.partialDelivery = partialDelivery
         // Moonlight sizes each RS row as StreamConfig.packetSize + MAX_RTP_HEADER_SIZE.
         // StreamConfig.packetSize already includes NV_VIDEO_PACKET.
         self.blockSize  = packetSize + kRtpHeaderSize
@@ -222,14 +252,25 @@ final class RtpVideoQueue {
             if havePacketsInBlock {
                 // We were in the middle of a block when a new one arrived.
                 if frameIndex != currentFrameNumber {
-                    // Frame changed — the in-progress frame is unrecoverable.
-                    if !reportedLostFrame {
-                        onFrameLost?(currentFrameNumber)
-                        stats?.recordFrameLost()
-                        reportedLostFrame = true
+                    // Frame changed. PyroWave delivers the final block with its holes zero filled
+                    // when the rules allow; every other case is an unrecoverable frame.
+                    if partialDelivery, multiFecCurrentBlock == multiFecLastBlock, deliverPartialFrame() {
+                        // Delivered; deliverPartialFrame advanced the frame state.
+                    } else {
+                        if !reportedLostFrame {
+                            onFrameLost?(currentFrameNumber)
+                            stats?.recordFrameLost()
+                            reportedLostFrame = true
+                        }
+                        purge()
+                        clearFrameAssembly()
                     }
-                    purge()
-                    clearFrameAssembly()
+                } else if partialDelivery, fecBlock == multiFecCurrentBlock &+ 1, stageIncompleteBlock() {
+                    // The next block of the same frame started: the current one is staged with
+                    // zeros where packets are missing, and the frame carries on.
+                    clearBlockSlots()
+                    rsCodec = nil
+                    multiFecCurrentBlock = fecBlock
                 } else {
                     // Same frame, different FEC block — we missed a block; can't recover.
                     if !reportedLostFrame {
@@ -244,8 +285,31 @@ final class RtpVideoQueue {
                     return reject("missed fec block frame=\(frameIndex) block=\(fecBlock) currentBlock=\(multiFecCurrentBlock)")
                 }
             } else if frameIndex != currentFrameNumber {
-                // Old frame ended cleanly but we skipped some frames.
+                // Old frame ended cleanly but we skipped some frames. A PyroWave frame that was
+                // abandoned between blocks (a whole block never arrived) is a lost frame.
+                if partialDelivery, frameAssemblyPackets > 0 {
+                    onFrameLost?(currentFrameNumber)
+                    stats?.recordFrameLost()
+                }
                 clearFrameAssembly()
+            }
+
+            if partialDelivery {
+                // The frame must start at block 0 and continue block by block. Anything else means
+                // a whole FEC block (its size unknown) never arrived: the frame cannot be staged.
+                let expectedBlock: UInt8 = frameIndex == currentFrameNumber && frameAssemblyPackets > 0
+                    ? multiFecCurrentBlock : 0
+                if fecBlock != expectedBlock {
+                    if !(frameIndex == currentFrameNumber && reportedLostFrame) {
+                        onFrameLost?(frameIndex)
+                        stats?.recordFrameLost()
+                    }
+                    purge()
+                    clearFrameAssembly()
+                    currentFrameNumber = frameIndex &+ 1
+                    multiFecCurrentBlock = 0
+                    return reject("whole fec block missing frame=\(frameIndex) block=\(fecBlock) expected=\(expectedBlock)")
+                }
             }
 
             initBlock(seqNum: seqNum, frameIndex: frameIndex,
@@ -263,6 +327,7 @@ final class RtpVideoQueue {
                 currentFrameType = 1
                 currentLastPayloadLen = 0
                 currentCriticalPackets = 0
+                currentFrameFlagsUsable = false
             }
         }
 
@@ -315,7 +380,11 @@ final class RtpVideoQueue {
         if isParity { rxParity += 1 } else { rxData += 1 }
 
         // ── Try to reconstruct this FEC block ───────────────────────────────
-        guard tryReconstruct() else { return .queued }
+        guard tryReconstruct() else {
+            armSilenceDeadlineIfEligible()
+            return .queued
+        }
+        pendingDeadline = nil
 
         // FEC block complete — append its data payloads to the frame assembly.
         stageBlock()
@@ -347,6 +416,7 @@ final class RtpVideoQueue {
         multiFecCurrentBlock = fecBlock
         multiFecLastBlock    = fecLast
         reportedLostFrame    = false
+        pendingDeadline      = nil
 
         bufferDataShards   = Int((fecInfo >> 22) & 0x3FF)
         fecPercentage      = Int((fecInfo >>  4) & 0xFF)
@@ -386,6 +456,7 @@ final class RtpVideoQueue {
     private func purge() {
         clearBlockSlots()
         rsCodec = nil
+        pendingDeadline = nil
     }
 
     /// Mark all slots free for the next block (row buffers are retained and reused).
@@ -397,6 +468,12 @@ final class RtpVideoQueue {
     private func clearFrameAssembly() {
         frameAssembly.removeAll(keepingCapacity: true)
         frameAssemblyPackets = 0
+        if partialDelivery {
+            payloadStarts.removeAll(keepingCapacity: true)
+            payloadLost.removeAll(keepingCapacity: true)
+            payloadRecordStart.removeAll(keepingCapacity: true)
+            payloadLostCount = 0
+        }
     }
 
     // MARK: - Private: reconstruction
@@ -465,11 +542,25 @@ final class RtpVideoQueue {
     /// Append this block's data payloads in sequence order to the frame assembly.
     /// Data shards occupy slot indices 0..<bufferDataShards (parity packets always
     /// land at idx >= bufferDataShards), so the loop range excludes parity by design.
-    private func stageBlock() {
+    ///
+    /// `fillLost` (PyroWave partial delivery only): a missing data shard is replaced by a
+    /// full payload of zeros and recorded as lost, so every later payload keeps its offset.
+    private func stageBlock(fillLost: Bool = false) {
         var packets = 0
         var payloadBytes = 0
+        let payloadSize = blockSize - kRtpHeaderSize - kNvPacketSize
         for i in 0..<bufferDataShards {
-            guard slotUsed[i] else { continue }
+            guard slotUsed[i] else {
+                if fillLost && partialDelivery {
+                    payloadStarts.append(frameAssembly.count)
+                    payloadLost.append(true)
+                    payloadRecordStart.append(false)
+                    payloadLostCount += 1
+                    frameAssembly.append(contentsOf: repeatElement(0, count: payloadSize))
+                    payloadBytes += payloadSize
+                }
+                continue
+            }
             let baseOffset = kRtpHeaderSize + kNvPacketSize
             let frameHeaderSize: Int
             if slotFlags[i] & kFlagSOF != 0 && multiFecCurrentBlock == 0 {
@@ -484,6 +575,8 @@ final class RtpVideoQueue {
                 currentFrameType = meta.frameType
                 currentLastPayloadLen = meta.lastPayloadLen
                 currentCriticalPackets = meta.pyroWaveCriticalPackets
+                currentFrameFlagsUsable = firstByte == 0x01
+                    && slotData[i][kRtpHeaderSize + 9] & kExtraFlagRecordStart != 0
                 if frameLogCount < 8 {
                     StreamLog.log("[rtp/queue] frame header firstByte=0x\(String(format: "%02x", firstByte)) size=\(frameHeaderSize) frameType=\(currentFrameType)")
                 }
@@ -493,6 +586,11 @@ final class RtpVideoQueue {
             let payloadStart = baseOffset + frameHeaderSize
             let payloadEnd   = min(slotLength[i], blockSize)  // cap to stored buffer size
             guard payloadStart < payloadEnd else { continue }
+            if partialDelivery {
+                payloadStarts.append(frameAssembly.count)
+                payloadLost.append(false)
+                payloadRecordStart.append(slotData[i][kRtpHeaderSize + 9] & kExtraFlagRecordStart != 0)
+            }
             frameAssembly.append(contentsOf: slotData[i][payloadStart..<payloadEnd])
             payloadBytes += payloadEnd - payloadStart
             packets += 1
@@ -501,6 +599,72 @@ final class RtpVideoQueue {
         if frameLogCount < 8 {
             StreamLog.log("[rtp/queue] stage frame=\(currentFrameNumber) block=\(multiFecCurrentBlock)/\(multiFecLastBlock) packets=\(packets)/\(bufferDataShards) payloadBytes=\(payloadBytes)")
         }
+    }
+
+    // MARK: - Private: PyroWave partial delivery (D10)
+
+    /// Stages the current block even though data packets are missing, replacing them with zeros.
+    /// Returns false, changing nothing, when the frame cannot be delivered partially: the first
+    /// packet (frame header and sequence header) is missing, the frame does not announce a
+    /// critical prefix or does not flag record starts, or a critical packet is among the missing.
+    private func stageIncompleteBlock() -> Bool {
+        guard partialDelivery, bufferDataShards > 0 else { return false }
+        let base = kRtpHeaderSize + kNvPacketSize
+        var critical = currentCriticalPackets
+        if multiFecCurrentBlock != 0 {
+            guard currentFrameFlagsUsable else { return false }
+        } else {
+            guard slotUsed[0], slotFlags[0] & kFlagSOF != 0 else { return false }
+            let row = slotData[0]
+            // Only the 8-byte short header carries the critical packet count and lastPayloadLen.
+            guard row.count > base + 8, row[base] == 0x01 else { return false }
+            guard row[kRtpHeaderSize + 9] & kExtraFlagRecordStart != 0 else { return false }
+            critical = FrameMeta.parseShortHeader(row, headerOffset: base).pyroWaveCriticalPackets
+        }
+        guard critical > 0 else { return false }
+        let staged = payloadStarts.count
+        if staged < critical {
+            for i in 0..<bufferDataShards where !slotUsed[i] && staged + i < critical { return false }
+        }
+        stageBlock(fillLost: true)
+        return true
+    }
+
+    /// The final block is incomplete and its frame is ending: stage it with zeros and emit the
+    /// frame. Leaves the queue at the start of the next frame. False (nothing changed) when the
+    /// partial delivery rules are not met.
+    private func deliverPartialFrame() -> Bool {
+        guard stageIncompleteBlock() else { return false }
+        pendingDeadline = nil
+        submitFrame()
+        currentFrameNumber &+= 1
+        multiFecCurrentBlock = 0
+        clearFrameAssembly()
+        clearBlockSlots()
+        rsCodec = nil
+        return true
+    }
+
+    /// Arms (or renews) the 1 ms silence deadline: only for the final block of a frame, only
+    /// when it has no parity, and only once its last data packet itself has arrived. If that
+    /// packet is missing no deadline is armed, because a host pacing gap would look like loss;
+    /// the frame then waits for its remaining data or the next frame boundary.
+    private func armSilenceDeadlineIfEligible() {
+        guard partialDelivery, bufferParityShards == 0, bufferDataShards > 0,
+              multiFecCurrentBlock == multiFecLastBlock, slotUsed[bufferDataShards - 1] else { return }
+        pendingDeadline = clock() + Self.silenceDeadlineSeconds
+    }
+
+    /// Called by the receive loop when it has waited until `pendingDeadline` with nothing left in
+    /// the socket. Delivers the final block with its holes zero filled when the rules allow;
+    /// otherwise leaves the frame to boundary based handling. Returns true when a frame was emitted.
+    @discardableResult
+    func expirePending() -> Bool {
+        guard let deadline = pendingDeadline, clock() >= deadline else { return false }
+        pendingDeadline = nil
+        guard partialDelivery, havePacketsInBlock, bufferParityShards == 0,
+              multiFecCurrentBlock == multiFecLastBlock else { return false }
+        return deliverPartialFrame()
     }
 
     /// Emit the assembled frame via onFrameAssembled as a borrowed buffer view.
@@ -512,9 +676,14 @@ final class RtpVideoQueue {
         let ts = currentFrameRtpTimestamp
         stats?.recordFrameAssembled(rtpTimestamp: ts)
         let frame = currentFrameNumber
-        let meta = FrameMeta(frameType: currentFrameType,
+        var meta = FrameMeta(frameType: currentFrameType,
                              lastPayloadLen: currentLastPayloadLen,
                              pyroWaveCriticalPackets: currentCriticalPackets)
+        if partialDelivery, payloadLostCount > 0 {
+            meta.lossMap = PyroWaveLossMap(payloadStarts: payloadStarts, lost: payloadLost,
+                                           recordStart: payloadRecordStart)
+            stats?.recordFramePartial(lostPackets: payloadLostCount)
+        }
         frameAssembly.withUnsafeBufferPointer { buf in
             onFrameAssembled?(frame, buf, ts, meta)
         }
