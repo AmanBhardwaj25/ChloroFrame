@@ -391,7 +391,7 @@ struct HostConnectionView: View {
         // HDR stays off for it here, which also keeps /launch hdrMode and RTSP in agreement.
         let enableHdr = wantHdr && (codec == .hevc || codec == .av1)
         #if DEBUG
-        Swift.print("[ChloroFrame][launch] preferredCodec=\(preferredCodec) supportsPyroWave=\(VideoCapabilities.supportsPyroWave) "
+        DebugFileLog.write("[ChloroFrame][launch] preferredCodec=\(preferredCodec) supportsPyroWave=\(VideoCapabilities.supportsPyroWave) "
                   + "scm=0x\(String(serverInfo.codecModeSupport, radix: 16)) hostPyroWave420=\(serverInfo.supportsPyroWave420) "
                   + "-> codec=\(codec) enableHdr=\(enableHdr) overrideBitrate=\(overrideBitrate) autoBitrate=\(display.bitrate)")
         #endif

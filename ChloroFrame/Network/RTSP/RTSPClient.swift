@@ -177,7 +177,7 @@ final class RTSPClient {
             )
             effectiveConfig = outcome.config
             #if DEBUG
-            Swift.print("[ChloroFrame][rtsp] PyroWave advertised=\(SDPInfo(desc.body ?? "").advertisesPyroWave) "
+            DebugFileLog.write("[ChloroFrame][rtsp] PyroWave advertised=\(SDPInfo(desc.body ?? "").advertisesPyroWave) "
                       + "id=\(SDPInfo(desc.body ?? "").pyroWaveBitstreamID ?? "nil") class=\(networkClass) "
                       + "-> codec=\(outcome.config.codec) bitrate=\(outcome.config.bitrate) "
                       + "downgrade=\(outcome.downgradeReason ?? "none") mismatch=\(outcome.bitstreamMismatch)")
