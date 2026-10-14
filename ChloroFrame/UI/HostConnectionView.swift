@@ -21,6 +21,14 @@ private enum FlowPhase {
     // Distinct from .failed: carries the app + serverInfo so the error view can offer
     // "Stop Running App & Retry" when the failure is SunshineError.appAlreadyRunning.
     case launchFailed(SunshineApp, ServerInfo, Error)
+    // PyroWave audit passed its blockers but has warnings: ask before streaming (D5b).
+    case pyroWaveWarnings(SunshineApp, ServerInfo, PyroWaveAuditReport)
+}
+
+// What to do about PyroWave when launch continues after the audit (D5b).
+private enum PyroWaveLaunchChoice {
+    case auto          // not applicable, or the audit passed
+    case useHEVC       // blocker failed, or the user chose HEVC
 }
 
 // MARK: - Root view
@@ -41,6 +49,12 @@ struct HostConnectionView: View {
     @State private var client: SunshineHTTPClient
     @State private var phase: FlowPhase = .connecting
     @State private var showStreamSettings = false
+    // PyroWave readiness (D5b): the one-line HEVC fallback notice, the report behind its Details
+    // button, and the app-list "Check PyroWave readiness" action.
+    @State private var pyroWaveFallbackReport: PyroWaveAuditReport?
+    @State private var showFallbackDetails = false
+    @State private var pyroWaveCheckReport: PyroWaveAuditReport?
+    @State private var pyroWaveChecking = false
 
     init(host: Host) {
         self.host = host
@@ -66,9 +80,30 @@ struct HostConnectionView: View {
                 errorView(error)
             case .launchFailed(let app, let info, let error):
                 launchFailedView(app, serverInfo: info, error: error)
+            case .pyroWaveWarnings(let app, let info, let report):
+                PyroWaveWarningsView(
+                    report: report,
+                    onStream:  { Task { await performLaunch(app: app, serverInfo: info, pyroWave: .auto) } },
+                    onUseHEVC: { Task { await performLaunch(app: app, serverInfo: info, pyroWave: .useHEVC) } },
+                    onCancel:  { Task { await connect() } }
+                )
             }
         }
         .task { await connect() }
+        .sheet(isPresented: $showFallbackDetails) {
+            if let report = pyroWaveFallbackReport {
+                PyroWaveAuditReportView(report: report, onClose: { showFallbackDetails = false })
+            }
+        }
+        .sheet(isPresented: Binding(
+            get: { pyroWaveCheckReport != nil },
+            set: { if !$0 { pyroWaveCheckReport = nil } }
+        )) {
+            if let report = pyroWaveCheckReport {
+                PyroWaveAuditReportView(report: report, title: "PyroWave readiness for \(host.name)",
+                                        onClose: { pyroWaveCheckReport = nil })
+            }
+        }
     }
 
     // MARK: - Connecting
@@ -229,8 +264,22 @@ struct HostConnectionView: View {
                     .padding(20)
                 }
             }
+
+            Divider()
+            HStack(spacing: 8) {
+                Button("Check PyroWave readiness") {
+                    Task { await checkPyroWaveReadiness(serverInfo: info) }
+                }
+                .disabled(pyroWaveChecking)
+                .help("Runs the PyroWave readiness checks for this host and shows every result, even when PyroWave is not the selected codec.")
+                if pyroWaveChecking { ProgressView().controlSize(.small) }
+                Spacer()
+            }
+            .font(.caption)
+            .padding(.horizontal, 20)
+            .padding(.vertical, 8)
         }
-        .frame(width: 520, height: 460)
+        .frame(width: 520, height: 500)
     }
 
     // MARK: - Error
@@ -297,9 +346,28 @@ struct HostConnectionView: View {
             ProgressView().controlSize(.large)
             Text("Launching \(app.title)…")
                 .foregroundStyle(.secondary)
+            pyroWaveFallbackNotice
         }
         .frame(width: 360, height: 200)
         .padding()
+    }
+
+    // One line shown when the PyroWave audit sent this launch to HEVC (D5b), with the full report
+    // behind Details. Empty for every other launch.
+    @ViewBuilder
+    private var pyroWaveFallbackNotice: some View {
+        if let line = pyroWaveFallbackReport?.fallbackHeadline {
+            VStack(spacing: 4) {
+                Text(line)
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+                Button("Details") { showFallbackDetails = true }
+                    .font(.caption)
+                    .buttonStyle(.link)
+            }
+        }
     }
 
     // MARK: - RTSP negotiating
@@ -309,6 +377,7 @@ struct HostConnectionView: View {
             ProgressView().controlSize(.large)
             Text("Connecting stream for \(app.title)…")
                 .foregroundStyle(.secondary)
+            pyroWaveFallbackNotice
         }
         .frame(width: 360, height: 200)
         .padding()
@@ -359,6 +428,51 @@ struct HostConnectionView: View {
 
     private func launch(app: SunshineApp, serverInfo: ServerInfo) async {
         phase = .launching(app)
+        pyroWaveFallbackReport = nil
+        guard preferredCodec == "pyrowave" else {
+            await performLaunch(app: app, serverInfo: serverInfo, pyroWave: .auto)
+            return
+        }
+
+        // PyroWave readiness audit (D5b). It runs here, BEFORE /launch: nothing may run between
+        // /launch and RTSP, where Sunshine's session times out.
+        let display = buildDisplayConfig(base: DisplayConfig.detect())
+        let report = await PyroWaveAuditRunner.run(
+            client: client, serverInfo: serverInfo, display: display,
+            requestedKbps: pyroWaveRequestedKbps(display: display),
+            userWantsHDR: enableHDR, reason: "launch"
+        )
+        if report.blocked {
+            pyroWaveFallbackReport = report
+            await performLaunch(app: app, serverInfo: serverInfo, pyroWave: .useHEVC)
+        } else if !report.warnings.isEmpty {
+            phase = .pyroWaveWarnings(app, serverInfo, report)
+        } else {
+            await performLaunch(app: app, serverInfo: serverInfo, pyroWave: .auto)
+        }
+    }
+
+    // The total bitrate a PyroWave launch will request: the user's override, else the PyroWave
+    // default. Mirrors the codec == .pyrowave branch of performLaunch.
+    private func pyroWaveRequestedKbps(display: DisplayConfig) -> Int {
+        overrideBitrate > 0
+            ? overrideBitrate
+            : PyroWaveBitrate.defaultKbps(width: display.width, height: display.height, fps: display.fps)
+    }
+
+    private func checkPyroWaveReadiness(serverInfo: ServerInfo) async {
+        pyroWaveChecking = true
+        defer { pyroWaveChecking = false }
+        let display = buildDisplayConfig(base: DisplayConfig.detect())
+        pyroWaveCheckReport = await PyroWaveAuditRunner.run(
+            client: client, serverInfo: serverInfo, display: display,
+            requestedKbps: pyroWaveRequestedKbps(display: display),
+            userWantsHDR: enableHDR, forceRefresh: true, reason: "button"
+        )
+    }
+
+    private func performLaunch(app: SunshineApp, serverInfo: ServerInfo, pyroWave: PyroWaveLaunchChoice) async {
+        phase = .launching(app)
         let base    = DisplayConfig.detect()
         let display = buildDisplayConfig(base: base)
         // Compute enableHdr here so the same value goes into both the HTTP /launch request
@@ -380,7 +494,8 @@ struct HostConnectionView: View {
         // PyroWave only when this Mac can decode it and the host advertises the 8-bit 4:2:0
         // profile. Remote routes are downgraded to HEVC in RTSP negotiation (decision Q4),
         // where the route is known. Otherwise falls through to HEVC like AV1 does.
-        case "pyrowave" where VideoCapabilities.supportsPyroWave && serverInfo.supportsPyroWave420:
+        case "pyrowave" where pyroWave == .auto
+                           && VideoCapabilities.supportsPyroWave && serverInfo.supportsPyroWave420:
             codec = .pyrowave
         case "av1" where VideoCapabilities.supportsAV1Hardware
                       && (wantHdr ? serverInfo.supportsAV1Main10 : serverInfo.supportsAV1Main8):

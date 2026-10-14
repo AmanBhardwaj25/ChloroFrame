@@ -40,10 +40,10 @@ struct ServerInfo {
     var supportsAV1Main10: Bool { codecModeSupport & Self.scmAV1Main10 != 0 }
 
     // PyroWave ServerCodecModeSupport bits (vibeshine/docs/pyrowave-protocol.md "/serverinfo").
-    static let scmPyroWave          = 0x00800000   // 8-bit 4:2:0
-    static let scmPyroWave444       = 0x01000000   // 8-bit 4:4:4
-    static let scmPyroWaveHDR10     = 0x02000000   // 10-bit 4:2:0
-    static let scmPyroWaveHDR10_444 = 0x04000000   // 10-bit 4:4:4
+    nonisolated static let scmPyroWave          = 0x00800000   // 8-bit 4:2:0
+    nonisolated static let scmPyroWave444       = 0x01000000   // 8-bit 4:4:4
+    nonisolated static let scmPyroWaveHDR10     = 0x02000000   // 10-bit 4:2:0
+    nonisolated static let scmPyroWaveHDR10_444 = 0x04000000   // 10-bit 4:4:4
 
     var supportsPyroWave420:      Bool { codecModeSupport & Self.scmPyroWave != 0 }
     var supportsPyroWave444:      Bool { codecModeSupport & Self.scmPyroWave444 != 0 }
@@ -148,6 +148,22 @@ final class SunshineHTTPClient: NSObject {
         let info = try parseServerInfo(data)
         AppLogger.shared.log("hostname=\(info.hostname) gpu=\(info.gpuType) paired=\(info.isPaired) codecModes=\(info.codecModeSupport) currentGame=\(info.currentGame)", "HTTP", "serverinfo")
         return info
+    }
+
+    /// The address that answered the most recent call, or the primary address before any call
+    /// has succeeded. The readiness audit resolves the route to this address.
+    var activeAddress: String { lastGoodAddress ?? host.address }
+
+    /// Paired HTTPS /serverinfo, parsed into the PyroWave* keys (vibeshine only sends them to a
+    /// paired client). Fields are nil when absent, which is what Apollo returns. Throws when the
+    /// host is unreachable or rejects the client certificate (Apollo answers HTTP 200 with
+    /// status_code="401" in the XML in that case, which must not read as "no PyroWave keys").
+    func fetchPairedServerInfo() async throws -> PyroWaveHostInfo {
+        let data = try await getHTTPS("serverinfo", requestTimeout: 3)
+        if let code = xmlAttr(data, "status_code"), code != "200" {
+            throw SunshineError.invalidResponse(xmlAttr(data, "status_message") ?? "serverinfo status \(code)")
+        }
+        return PyroWaveHostInfo(xml: data)
     }
 
     func isPaired() -> Bool {
@@ -452,7 +468,8 @@ final class SunshineHTTPClient: NSObject {
     }
 
     // Post-pairing calls (applist, launch) go over HTTPS and require mTLS.
-    private func getHTTPS(_ path: String, params: [String: String] = [:]) async throws -> Data {
+    // `requestTimeout` bounds the final candidate's request (nil keeps the session default).
+    private func getHTTPS(_ path: String, params: [String: String] = [:], requestTimeout: TimeInterval? = nil) async throws -> Data {
         if _cachedIdentity == nil { loadAndCacheIdentity() }
         return try await withAddressFallback { addr, timeout in
             var comps        = URLComponents()
@@ -465,6 +482,7 @@ final class SunshineHTTPClient: NSObject {
             guard let url = comps.url else { throw SunshineError.unreachable }
             var request = URLRequest(url: url)
             if timeout > 0 { request.timeoutInterval = timeout }
+            else if let requestTimeout { request.timeoutInterval = requestTimeout }
             AppLogger.shared.log("GET (HTTPS mTLS) \(url.absoluteString)  identity=\(_cachedIdentity != nil ? "present" : "MISSING")", "HTTP", path)
             do {
                 let (data, response) = try await urlSession.data(for: request)

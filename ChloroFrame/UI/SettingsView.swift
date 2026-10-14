@@ -21,46 +21,70 @@ struct SettingsView: View {
     @AppStorage("useAppleAudioDecoder") private var useAppleAudioDecoder = false
     @AppStorage("preferSmootherAudio") private var preferSmootherAudio = false
     @AppStorage("suppressAWDLDuringStream") private var suppressAWDL = true
+    // Version of the PyroWave experimental notice the user last accepted (D5b).
+    @AppStorage(PyroWaveExperimentalNotice.acknowledgedKey) private var pyroWaveNoticeAcknowledgedVersion = 0
 
     @State private var awdlReady = AWDLSuppressor.shared.isHelperInstalled
     @State private var awdlSetupError: String?
     @State private var showKeybinds = false
+    // PyroWave experimental notice: the selection sheet (Cancel restores the previous codec)
+    // and the read-only info sheet behind the info button.
+    @State private var showPyroWaveNotice = false
+    @State private var showPyroWaveInfo = false
+    @State private var codecBeforePyroWave = "h265"
     @Environment(\.openWindow) private var openWindow
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             section("Video") {
-                Picker("Codec", selection: $preferredCodec) {
-                    Text("H.264 (AVC)").tag("h264")
-                    Text("H.265 (HEVC)").tag("h265")
-                    // AV1 is always listed, but greyed out (disabled) when this device
-                    // has no hardware AV1 decoder, so the user can see it exists and
-                    // why it isn't available rather than it silently missing.
-                    Text(VideoCapabilities.supportsAV1Hardware
-                         ? "AV1"
-                         : "AV1 (not supported on this device)")
-                        .tag("av1")
-                        .disabled(!VideoCapabilities.supportsAV1Hardware)
-                    // PyroWave decodes on the GPU, so any Apple silicon Mac qualifies. Greyed out
-                    // otherwise, like AV1.
-                    Text(VideoCapabilities.supportsPyroWave
-                         ? "PyroWave (Experimental)"
-                         : "PyroWave (Experimental, requires Apple silicon)")
-                        .tag("pyrowave")
-                        .disabled(!VideoCapabilities.supportsPyroWave)
+                HStack(spacing: 6) {
+                    Picker("Codec", selection: $preferredCodec) {
+                        Text("H.264 (AVC)").tag("h264")
+                        Text("H.265 (HEVC)").tag("h265")
+                        // AV1 is always listed, but greyed out (disabled) when this device
+                        // has no hardware AV1 decoder, so the user can see it exists and
+                        // why it isn't available rather than it silently missing.
+                        Text(VideoCapabilities.supportsAV1Hardware
+                             ? "AV1"
+                             : "AV1 (not supported on this device)")
+                            .tag("av1")
+                            .disabled(!VideoCapabilities.supportsAV1Hardware)
+                        // PyroWave decodes on the GPU, so any Apple silicon Mac qualifies. Greyed out
+                        // otherwise, like AV1.
+                        Text(VideoCapabilities.supportsPyroWave
+                             ? "PyroWave (Experimental)"
+                             : "PyroWave (Experimental, requires Apple silicon)")
+                            .tag("pyrowave")
+                            .disabled(!VideoCapabilities.supportsPyroWave)
+                    }
+                    .help("H.264 is broadly supported; H.265 is better quality at lower bitrates but requires HEVC decoding support; AV1 is the most efficient but requires a recent Apple silicon hardware AV1 decoder; PyroWave is experimental, needs a Vibeshine host on Ethernet and this Mac on Ethernet or 5 GHz+ Wi-Fi")
+                    .onAppear {
+                        // Normalize a stale stored preference: if AV1 was selected on a
+                        // device that supports it and the user later moves to one that
+                        // doesn't, fall back to HEVC so the picker can't show a disabled
+                        // row as the active selection.
+                        if preferredCodec == "av1" && !VideoCapabilities.supportsAV1Hardware {
+                            preferredCodec = "h265"
+                        }
+                        if preferredCodec == "pyrowave" && !VideoCapabilities.supportsPyroWave {
+                            preferredCodec = "h265"
+                        }
                 }
-                .help("H.264 is broadly supported; H.265 is better quality at lower bitrates but requires HEVC decoding support; AV1 is the most efficient but requires a recent Apple silicon hardware AV1 decoder; PyroWave is experimental, needs a Vibeshine host on Ethernet and this Mac on Ethernet or 5 GHz+ Wi-Fi")
-                .onAppear {
-                    // Normalize a stale stored preference: if AV1 was selected on a
-                    // device that supports it and the user later moves to one that
-                    // doesn't, fall back to HEVC so the picker can't show a disabled
-                    // row as the active selection.
-                    if preferredCodec == "av1" && !VideoCapabilities.supportsAV1Hardware {
-                        preferredCodec = "h265"
-                    }
-                    if preferredCodec == "pyrowave" && !VideoCapabilities.supportsPyroWave {
-                        preferredCodec = "h265"
-                    }
+                .onChange(of: preferredCodec) { old, new in
+                    // Selecting PyroWave shows the experimental notice before the change sticks,
+                    // until the user has accepted the current version of the text.
+                    guard new == "pyrowave", old != "pyrowave",
+                          pyroWaveNoticeAcknowledgedVersion < PyroWaveExperimentalNotice.version else { return }
+                    codecBeforePyroWave = old
+                    showPyroWaveNotice = true
+                }
+
+                Button { showPyroWaveInfo = true } label: {
+                    Image(systemName: "info.circle")
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+                .help("About PyroWave and what ChloroFrame checks before using it")
                 }
 
                 // Toggle("Hardware Acceleration", isOn: $hardwareAcceleration)
@@ -112,6 +136,24 @@ struct SettingsView: View {
         .fixedSize(horizontal: false, vertical: true)
         .onAppear { awdlReady = AWDLSuppressor.shared.isHelperInstalled }
         .sheet(isPresented: $showKeybinds) { KeybindEditorView() }
+        .sheet(isPresented: $showPyroWaveNotice, onDismiss: {
+            // Dismissing without accepting (Cancel or Escape) restores the previous codec.
+            if pyroWaveNoticeAcknowledgedVersion < PyroWaveExperimentalNotice.version,
+               preferredCodec == "pyrowave" {
+                preferredCodec = codecBeforePyroWave
+            }
+        }) {
+            PyroWaveNoticeView(mode: .confirm(
+                onEnable: {
+                    pyroWaveNoticeAcknowledgedVersion = PyroWaveExperimentalNotice.version
+                    showPyroWaveNotice = false
+                },
+                onCancel: { showPyroWaveNotice = false }
+            ))
+        }
+        .sheet(isPresented: $showPyroWaveInfo) {
+            PyroWaveNoticeView(mode: .info(onClose: { showPyroWaveInfo = false }))
+        }
     }
 
     // A grouped section that grows to fit its contents (no scroll view, so the window can be
