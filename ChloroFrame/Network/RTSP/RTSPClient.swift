@@ -176,6 +176,12 @@ final class RTSPClient {
                 config: config, sdp: SDPInfo(desc.body ?? ""), networkClass: networkClass
             )
             effectiveConfig = outcome.config
+            #if DEBUG
+            Swift.print("[ChloroFrame][rtsp] PyroWave advertised=\(SDPInfo(desc.body ?? "").advertisesPyroWave) "
+                      + "id=\(SDPInfo(desc.body ?? "").pyroWaveBitstreamID ?? "nil") class=\(networkClass) "
+                      + "-> codec=\(outcome.config.codec) bitrate=\(outcome.config.bitrate) "
+                      + "downgrade=\(outcome.downgradeReason ?? "none") mismatch=\(outcome.bitstreamMismatch)")
+            #endif
             pyroWaveBitstreamMismatch = outcome.bitstreamMismatch
             if let reason = outcome.downgradeReason {
                 rtspLog("PyroWave unavailable: \(reason), downgrading request to hevc", step: "DESCRIBE")

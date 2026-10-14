@@ -390,6 +390,11 @@ struct HostConnectionView: View {
         // PyroWave is 8-bit 4:2:0 SDR only until D9 (HDR needs the 0x010e HDR-mode message), so
         // HDR stays off for it here, which also keeps /launch hdrMode and RTSP in agreement.
         let enableHdr = wantHdr && (codec == .hevc || codec == .av1)
+        #if DEBUG
+        Swift.print("[ChloroFrame][launch] preferredCodec=\(preferredCodec) supportsPyroWave=\(VideoCapabilities.supportsPyroWave) "
+                  + "scm=0x\(String(serverInfo.codecModeSupport, radix: 16)) hostPyroWave420=\(serverInfo.supportsPyroWave420) "
+                  + "-> codec=\(codec) enableHdr=\(enableHdr) overrideBitrate=\(overrideBitrate) autoBitrate=\(display.bitrate)")
+        #endif
         // PyroWave needs hundreds of Mbps, so without a user override it gets its own default
         // instead of the 80 Mbps cap in DisplayConfig. The ordinary auto value rides along as
         // the fallback an RTSP downgrade to HEVC restores.
