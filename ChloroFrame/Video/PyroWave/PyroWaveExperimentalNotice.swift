@@ -44,7 +44,7 @@ nonisolated enum PyroWaveExperimentalNotice {
         ChecklistItem(text: "the Mac has an Apple silicon GPU that can decode PyroWave in time",
                       checkIDs: ["C1", "C15"]),
         ChecklistItem(text: "the host runs Vibeshine with PyroWave enabled",
-                      checkIDs: ["C2", "C3"]),
+                      checkIDs: ["C2"]),
         ChecklistItem(text: "the host and this Mac are on the same local network (no VPN or internet path)",
                       checkIDs: ["C4"]),
         ChecklistItem(text: "the host is connected by Ethernet",

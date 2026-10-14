@@ -229,7 +229,7 @@ nonisolated enum PyroWaveReadinessAudit {
     static let catalog: [Entry] = [
         Entry(id: "C1",  title: "Apple silicon GPU",             userFacing: true),
         Entry(id: "C2",  title: "Host advertises PyroWave",      userFacing: true),
-        Entry(id: "C3",  title: "Host is Vibeshine",             userFacing: true),
+        Entry(id: "C3",  title: "Host looks like Vibeshine",     userFacing: false),
         Entry(id: "C4",  title: "Local network route",           userFacing: true),
         Entry(id: "C5",  title: "Host is wired",                 userFacing: true),
         Entry(id: "C6",  title: "This Mac's link type",          userFacing: true),
@@ -289,13 +289,16 @@ nonisolated enum PyroWaveReadinessAudit {
             : make("C2", .blocker, .fail("the host does not advertise PyroWave (it must run Vibeshine with PyroWave enabled)"))
     }
 
+    /// Informational only (user decision): C2 already requires the host to advertise PyroWave,
+    /// and a missing fingerprint must never push a real Vibeshine host back to HEVC.
     private static func c3(_ i: PyroWaveAuditInputs) -> PyroWaveCheckResult {
         guard let info = i.hostInfo else {
-            return make("C3", .blocker, .unknown("could not read the host's paired server info"), unknown: .blocks)
+            return make("C3", .info, .unknown("could not read the host's paired server info"))
         }
         return info.looksLikeVibeshine
-            ? make("C3", .blocker, .pass)
-            : make("C3", .blocker, .fail("the host is not Vibeshine (PyroWave only works with Vibeshine hosts, not Apollo or Sunshine)"))
+            ? make("C3", .info, .pass)
+            : make("C3", .info, .unknown("the host sent no PyroWave details in its paired server info"),
+                   detail: "Informational. Not a Vibeshine build that reports them, or not Vibeshine at all.")
     }
 
     private static func c4(_ i: PyroWaveAuditInputs) -> PyroWaveCheckResult {

@@ -83,11 +83,16 @@ final class PyroWaveReadinessAuditTests: XCTestCase {
         XCTAssertTrue(row("C2", i).failedAsBlocker)
     }
 
-    func testC3ApolloLikeHostIsBlocked() {
-        var i = good(); i.hostInfo = PyroWaveHostInfo()
-        let r = row("C3", i)
-        XCTAssertTrue(r.failedAsBlocker)
-        if case .fail = r.outcome {} else { XCTFail("expected a hard fail, not unknown") }
+    /// C3 is informational: no fingerprint never blocks or warns.
+    func testC3IsOptional() {
+        var i = good()
+        for info in [Optional(PyroWaveHostInfo()), nil] {
+            i.hostInfo = info
+            let r = row("C3", i)
+            XCTAssertEqual(r.severity, .info)
+            XCTAssertFalse(r.failedAsBlocker)
+            XCTAssertFalse(r.isWarning)
+        }
     }
 
     /// A real Vibeshine host was seen sending only the link speed. Any PyroWave key passes.
@@ -101,12 +106,6 @@ final class PyroWaveReadinessAuditTests: XCTestCase {
         }
     }
 
-    func testC3FetchFailureBlocksAsUnknown() {
-        var i = good(); i.hostInfo = nil
-        let r = row("C3", i)
-        XCTAssertEqual(r.outcome, .unknown("could not read the host's paired server info"))
-        XCTAssertTrue(r.failedAsBlocker)
-    }
 
     // MARK: - C4
 
