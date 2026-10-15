@@ -126,9 +126,9 @@ nonisolated enum CodecRegression {
         var out = "===== \(r.name): \(v.grade.rawValue) =====\n"
         out += "requested    \(r.codec ?? "?") HDR \(r.requestedHdr ? "on" : "off")"
             + " (HDR expected: \(r.expectedHdr ? "yes" : "no"), \(r.requestedFps) fps)\n"
-        out += "received     \(name(r.receivedCodec)), picture "
-            + "\(r.receivedHdr.map { $0 ? "HDR" : "SDR" } ?? "unknown")"
-            + (r.profile.map { ", \($0)" } ?? "") + "\n"
+        // PyroWave's profile already names the picture ("4:4:4 10-bit, picture HDR (PQ)").
+        out += "received     \(name(r.receivedCodec)), "
+            + (r.profile ?? "picture \(r.receivedHdr.map { $0 ? "HDR" : "SDR" } ?? "unknown")") + "\n"
         if !v.reasons.isEmpty { out += "why          " + v.reasons.joined(separator: "; ") + "\n" }
         if r.failure != nil { return out }
         let s = r.samples
@@ -164,12 +164,14 @@ nonisolated enum CodecRegression {
             let recv = r.failure == nil
                 ? "\(name(r.receivedCodec)) \(r.receivedHdr == true ? "HDR" : "SDR")" : "-"
             let mins = max(r.seconds, 1) / 60
-            out += String(format: "%-21@ %-6@ %-15@ %7.1f  %8.1f  %8.2f  %9.2f  %@\n",
-                          r.name as NSString, v.grade.rawValue as NSString, recv as NSString,
-                          median(r.samples.map(\.fps)), median(r.samples.map(\.bitrateMbps)),
-                          Double(delta(r.samples, \.framesLost)) / mins,
-                          median(r.samples.map(\.decodeAvgMs)),
-                          v.reasons.joined(separator: "; ") as NSString)
+            // %-Ns does not pad an NSString, so pad in Swift.
+            func pad(_ t: String, _ n: Int) -> String { t.padding(toLength: max(n, t.count), withPad: " ", startingAt: 0) }
+            out += pad(r.name, 21) + " " + pad(v.grade.rawValue, 6) + " " + pad(recv, 15)
+                + String(format: " %7.1f  %8.1f  %8.2f  %9.2f  ",
+                         median(r.samples.map(\.fps)), median(r.samples.map(\.bitrateMbps)),
+                         Double(delta(r.samples, \.framesLost)) / mins,
+                         median(r.samples.map(\.decodeAvgMs)))
+                + v.reasons.joined(separator: "; ") + "\n"
         }
         return out
     }

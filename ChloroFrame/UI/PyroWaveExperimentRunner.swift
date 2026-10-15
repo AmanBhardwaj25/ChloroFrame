@@ -136,7 +136,14 @@ final class PyroWaveExperimentRunner {
         DebugFileLog.write("[experiment] start: host \(host.name), \(cfg.phases.count) phases")
 
         var results: [PyroWaveExperimentReport.PhaseResult] = []
-        var text = "PyroWave experiment \(Date())\nhost \(host.name)\n\n"
+        var text = "PyroWave experiment \(Date())\nhost \(host.name)\n"
+        // The stream settings every phase inherits (the codec regression changes only codec and HDR).
+        let d = UserDefaults.standard
+        let display = DisplayConfig.detect()
+        text += "settings     resolution \(d.string(forKey: "streamOverrideResolution").flatMap { $0.isEmpty ? nil : $0 } ?? "auto \(display.width)x\(display.height)"), "
+            + "fps \(d.integer(forKey: "streamOverrideFPS") > 0 ? String(d.integer(forKey: "streamOverrideFPS")) : "auto \(display.fps)"), "
+            + "bitrate \(d.integer(forKey: "streamOverrideBitrate") > 0 ? "\(d.integer(forKey: "streamOverrideBitrate") / 1000) Mbps override" : "auto"), "
+            + "4:4:4 \(d.bool(forKey: "pyroWave444")), display HDR \(display.hdr)\n\n"
 
         if cfg.udpProbeRepeats > 0 {
             if streamState.isActive { streamState.stop(); try? await Task.sleep(nanoseconds: 3_000_000_000) }
