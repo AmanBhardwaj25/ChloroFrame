@@ -81,16 +81,55 @@ run into issues using ChloroFrame with Sunshine, please open a GitHub issue with
 your Sunshine version, macOS version, Mac model, codec/HDR settings, and any
 useful logs.
 
+The experimental PyroWave codec (see below) needs a host running Vibeshine, a
+Sunshine fork that adds a PyroWave encoder. Apollo and upstream Sunshine do not
+offer PyroWave, so ChloroFrame never shows or uses it with them.
+
+## PyroWave (Experimental)
+
+[PyroWave](https://github.com/Themaister/pyrowave) is a very low latency,
+intra-only wavelet codec by Hans-Kristian Arntzen. Every frame stands alone, so a
+lost frame never needs a keyframe to recover, and decode is a few milliseconds on
+the GPU. The tradeoff is bandwidth: it uses hundreds of Mbps where HEVC uses tens.
+
+ChloroFrame decodes PyroWave natively in Metal. What works today:
+
+- 4:2:0 and optional 4:4:4 chroma (Settings, "4:4:4 chroma (PyroWave)").
+- 8-bit SDR, and 10-bit HDR10 when HDR is on, the display is HDR, and the host
+  offers it. The host decides whether a 10-bit picture is HDR (PQ) or 10-bit SDR.
+- Partial-frame recovery: a frame that lost a few packets is shown with the
+  damaged blocks skipped instead of being dropped.
+- A readiness check before every PyroWave launch (GPU, host, route, Wi-Fi band,
+  bitrate, decode speed). If the setup cannot carry PyroWave, the stream falls
+  back to HEVC and the app says why. "Check PyroWave readiness" in the app list
+  shows every check.
+- "Test network" in the app list asks the host for about 3 seconds of test
+  traffic at the PyroWave bitrate and grades loss and jitter on your path.
+- Its own bitrate default (about 290 Mbps at 3024x1890 @60, more for 4:4:4 and
+  HDR) and a custom bitrate cap of 2000 Mbps.
+
+PyroWave is local network only (never offered over Tailscale/VPN routes) and is
+labeled Experimental behind a one-time warning. It has been tested on one Mac
+(M4 Pro) over 6 GHz Wi-Fi against one host; Ethernet on the Mac is untested.
+On Wi-Fi expect a few lost or partial frames per minute from ordinary air loss,
+and expect "Test network" to fail on jitter even when streaming looks fine (the
+limit comes from the host project's calibration and may not suit Wi-Fi yet).
+
 ## Current Status
 
 Implemented, but still alpha:
 
-- Pairing with Apollo hosts and launching host apps.
+- Pairing with Apollo hosts and launching host apps, with a per-app Stop button and a
+  RUNNING badge for apps a previous session left running.
+- Optional secondary address per saved host (for example LAN plus Tailscale), with
+  automatic fallback, IPv6, and MTU-aware packet sizing for VPN paths.
 - H.264, HEVC, and AV1 video decode through VideoToolbox. AV1 is hardware-only: it
   needs a Mac with a hardware AV1 decoder (M3 or later) and a host that advertises AV1,
   and falls back to HEVC otherwise.
-- HDR10/PQ streaming path for HEVC and AV1 streams when the host app and display
-  support HDR (AV1 HDR also needs host AV1 Main10 encoding).
+- HDR10/PQ streaming for HEVC and AV1 when the host app and display support HDR (AV1
+  HDR also needs host AV1 Main10 encoding), and for PyroWave on a Vibeshine host.
+- PyroWave (experimental) on Vibeshine hosts: native Metal decode, see the PyroWave
+  section above.
 - Metal rendering with NV12/P010 texture paths and display-link frame pacing.
 - RTP video assembly with FEC recovery.
 - Opus audio decode (vendored libopus by default, or macOS's built-in AudioToolbox
@@ -101,7 +140,7 @@ Implemented, but still alpha:
   HDMI). If recovery gives up, a non-blocking banner offers a retry, and ⌃⌥⌘R resets
   stream audio at any time.
 - Per-connection stream overrides for resolution, frame rate, and bitrate, including a
-  custom bitrate field (up to 500 Mbps, experimental).
+  custom bitrate field (up to 500 Mbps, or 2000 Mbps with PyroWave, experimental).
 - Optional Wi-Fi airtime suppression while streaming via a privileged helper: brings
   `awdl0` down and reversibly suspends locationd's periodic positioning scan (both
   restored on stop), to reduce the periodic Wi-Fi stalls that cause audio dropouts.
@@ -118,8 +157,10 @@ Known gaps:
   and~~ LAN audio encryption is not implemented. (Output-device and route-change
   recovery shipped in 1.4-alpha.) Some delivery jitter remains on noisy Wi-Fi; it is
   now concealed click-free rather than eliminated.
-- AV1 HDR (Main10) is implemented but not yet verified against a live HDR host, and AV1
-  recovery from packet loss has not been tested under forced loss.
+- AV1 HDR (Main10) now streams HDR from a live host, but AV1 recovery from packet loss
+  has not been tested under forced loss.
+- PyroWave is experimental: tested on one Mac and one host over Wi-Fi only, see the
+  PyroWave section for its known limits.
 - Controller/gamepad input works (GameController.framework), including remapping buttons and
   back paddles to gamepad combos or host keyboard chords; see controller-mapping.md. Current
   controller limitations:
@@ -190,9 +231,13 @@ a dependable daily-driver client.
 - Apple Silicon Mac. Intel Macs are not supported.
 - macOS with Xcode installed.
 - An Apollo host reachable on the local network.
-- For HDR: HEVC or AV1 selected, host HDR enabled, and an HDR-capable Mac display.
+- For HDR: HEVC, AV1 or PyroWave selected, host HDR enabled, and an HDR-capable Mac
+  display.
 - For AV1: a Mac with a hardware AV1 decoder (M3 or later) and a host GPU that
   encodes AV1.
+- For PyroWave: an M1 or later Mac (Apple7 GPU family), a Vibeshine host with
+  PyroWave enabled, and a fast local network (host on Ethernet; the Mac on Ethernet
+  or 5/6 GHz Wi-Fi).
 - For ~~future AWDL suppression work~~ AWDL / locationd suppression: a correctly
   signed app and privileged helper. Public forks will need to update bundle
   identifiers, Team ID, and signing settings.
@@ -219,7 +264,8 @@ matching bundle identifiers and requirement strings in:
 - `ChloroFrameHelper/Info.plist`
 - `ChloroFrame/Resources/fullstacksandbox.com.ChloroFrame.Helper.plist`
 
-Unit tests (AV1 bitstream parsing and host codec capability bits) run with:
+Unit tests (protocol parsing, FEC, SDP, AV1, PyroWave parsing, decode round trips on
+the GPU, and more; a few need an Apple GPU) run with:
 
 ```sh
 xcodebuild test -project ChloroFrame.xcodeproj -scheme ChloroFrame -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO
@@ -231,13 +277,17 @@ xcodebuild test -project ChloroFrame.xcodeproj -scheme ChloroFrame -destination 
 - `ChloroFrame/Network/`: Apollo HTTP, RTSP, ENet, RTP, and FEC code.
 - `ChloroFrame/Video/`: VideoToolbox decode (including AV1 sequence-header parsing) and
   Metal presentation.
+- `ChloroFrame/Video/PyroWave/`: PyroWave decoder wrapper, record parser, frame pool,
+  readiness audit and network test.
+- `ChloroFrame/Vendor/pyrowave/`: the vendored PyroWave Metal port (upstream code, one
+  local patch).
 - `ChloroFrame/Audio/`: Opus decode and CoreAudio playback.
 - `ChloroFrame/Input/`: keyboard, mouse, and game controller input (GameController,
   raw HID for extra buttons, per-controller configs).
 - `ChloroFrame/UI/`: SwiftUI host list, connection flow, settings, and controller setup.
 - `ChloroFrameHelper/`: privileged SMAppService daemon that brings `awdl0` down and
   suspends/resumes locationd during a stream (Wi-Fi airtime suppression).
-- `ChloroFrameTests/`: unit tests (AV1 OBU parsing, format descriptions, host codec bits).
+- `ChloroFrameTests/`: unit tests.
 - `controller-mapping.md`: controller remapping design and status.
 - `PRIVACY.md`: privacy policy.
 - `clear_pairing.sh`: local utility for clearing stored pairing credentials.
@@ -249,6 +299,9 @@ Project code is released under the MIT License. See `LICENSE`.
 Vendored Opus headers and the static `libopus.a` in `ChloroFrame/Vendor/opus`
 remain under the upstream Opus license. If you distribute binaries, include the
 Opus license notice with your distribution.
+
+The vendored PyroWave decoder in `ChloroFrame/Vendor/pyrowave/` is by
+Hans-Kristian Arntzen, used under the MIT License; see `LICENSE-pyrowave.txt` there.
 
 The Reed-Solomon FEC code in `ChloroFrame/Network/FEC/` (both the C
 implementation and its Swift translation) is derived from the scalar
