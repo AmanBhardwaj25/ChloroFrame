@@ -133,6 +133,16 @@ struct ContentView: View {
                 dismiss: { connectingHost = nil },
                 streamState: streamState)
         }
+        .onReceive(NotificationCenter.default.publisher(for: .runCodecRegression)) { _ in
+            Task {
+                await PyroWaveExperimentRunner.shared.run(
+                    CodecRegression.config(),
+                    hosts: { hostManager.hosts },
+                    present: { host in connectingHost = host },
+                    dismiss: { connectingHost = nil },
+                    streamState: streamState)
+            }
+        }
         .onReceive(NotificationCenter.default.publisher(for: .runPyroWaveExperiment)) { _ in
             Task {
                 await PyroWaveExperimentRunner.shared.run(

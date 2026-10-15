@@ -28,6 +28,9 @@ struct StreamCommands: Commands {
             Button("Run PyroWave Experiment") {
                 NotificationCenter.default.post(name: .runPyroWaveExperiment, object: nil)
             }
+            Button("Run Codec Regression (every codec, HDR off and on, 5 min each)") {
+                NotificationCenter.default.post(name: .runCodecRegression, object: nil)
+            }
             #endif
 
             Divider()

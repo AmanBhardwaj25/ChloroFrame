@@ -5,9 +5,12 @@
 //  DEBUG builds only. Runs the D10 live A/B inside the app: for each phase it sets the partial
 //  delivery flag and software loss, starts a stream on the saved host through the normal launch
 //  flow, waits a fixed window after the first decoded frame, snapshots the counters and
-//  `netstat -s -p udp`, stops the stream, and writes a report.
+//  `netstat -s -p udp`, stops the stream, and writes a report. A phase that names a `codec`
+//  (and optionally `hdr`) sets those settings for the phase instead and is reported by
+//  CodecRegression: that is the codec regression run (every codec with HDR off and on).
 //
-//  Start it with Stream > Run PyroWave Experiment (default D10 phases) or by writing a config to
+//  Start it with Stream > Run PyroWave Experiment (default D10 phases), Stream > Run Codec
+//  Regression, or by writing a config to
 //  /tmp/chloroframe-experiment.json before launching the app. Report:
 //  /tmp/chloroframe-experiment-results.txt (also copied to /tmp/chloroframe-debug.log).
 //
@@ -22,6 +25,7 @@ import os
 
 extension Notification.Name {
     static let runPyroWaveExperiment = Notification.Name("runPyroWaveExperiment")
+    static let runCodecRegression = Notification.Name("runCodecRegression")
 }
 
 /// Loss settings the receive loop reads when a session starts (DEBUG only).
@@ -92,11 +96,19 @@ final class PyroWaveExperimentRunner {
         if let want = cfg.chroma444 { UserDefaults.standard.set(want, forKey: "pyroWave444") }
         let storedHDR = UserDefaults.standard.object(forKey: "enableHDR")
         if let want = cfg.hdr { UserDefaults.standard.set(want, forKey: "enableHDR") }
+        // Codec phases (CodecRegression) set the codec and HDR per phase.
+        let storedCodec = UserDefaults.standard.object(forKey: "preferredCodec")
+        let phasesSetCodec = cfg.phases.contains { $0.codec != nil }
+        let phasesSetHDR = cfg.phases.contains { $0.hdr != nil }
         // Puts back what the run changed. Called by the defer and again right before quitWhenDone
         // terminates, because NSApp.terminate exits the process and the defer never runs then.
         // Running it twice is harmless.
         let restoreSettings = {
-            if cfg.hdr != nil {
+            if phasesSetCodec {
+                if let storedCodec { UserDefaults.standard.set(storedCodec, forKey: "preferredCodec") }
+                else { UserDefaults.standard.removeObject(forKey: "preferredCodec") }
+            }
+            if cfg.hdr != nil || phasesSetHDR {
                 if let storedHDR { UserDefaults.standard.set(storedHDR, forKey: "enableHDR") }
                 else { UserDefaults.standard.removeObject(forKey: "enableHDR") }
             }
@@ -144,13 +156,16 @@ final class PyroWaveExperimentRunner {
                                         streamState: streamState)
             }
             results.append(result)
-            let block = PyroWaveExperimentReport.format(result)
+            let block = phase.codec != nil ? CodecRegression.format(result) : PyroWaveExperimentReport.format(result)
             text += block + "\n"
             // Keep the file current so a crash still leaves finished phases behind.
             write(text)
             DebugFileLog.write("[experiment] phase \(phase.name) done")
         }
-        text += PyroWaveExperimentReport.summaryTable(results)
+        let codecResults = results.filter { $0.codec != nil }
+        let otherResults = results.filter { $0.codec == nil }
+        if !codecResults.isEmpty { text += CodecRegression.summaryTable(codecResults) }
+        if !otherResults.isEmpty { text += PyroWaveExperimentReport.summaryTable(otherResults) }
         write(text)
         DebugFileLog.write("[experiment] finished, results in \(Self.resultsPath)")
         NSSound(named: "Glass")?.play()
@@ -201,6 +216,18 @@ final class PyroWaveExperimentRunner {
             name: phase.name, partialDelivery: phase.partialDelivery, lossPercent: phase.lossPercent,
             burstLength: phase.burstLength, seconds: 0, fps: [],
             start: PyroWaveExperimentSample(), end: PyroWaveExperimentSample(), failure: nil)
+        let hdrRequested = phase.hdr ?? cfg.hdr ?? UserDefaults.standard.bool(forKey: "enableHDR")
+        result.codec = phase.codec
+        result.requestedHdr = hdrRequested
+        if let codec = phase.codec {
+            UserDefaults.standard.set(codec, forKey: "preferredCodec")
+            result.expectedHdr = CodecRegression.expectsHDR(codecSetting: codec, hdrRequested: hdrRequested,
+                                                            displayHDR: DisplayConfig.detect().hdr)
+        }
+        if let hdr = phase.hdr { UserDefaults.standard.set(hdr, forKey: "enableHDR") }
+        // A codec phase other than PyroWave waits for any decoded frame; PyroWave (and the
+        // PyroWave experiments) wait for a PyroWave frame, so a downgrade reads as not PyroWave.
+        let waitsForPyroWave = phase.codec == nil || phase.codec == "pyrowave"
 
         // The receiver reads the flag and loss when its session starts.
         UserDefaults.standard.set(phase.partialDelivery, forKey: "pyroWavePartialDelivery")
@@ -217,9 +244,9 @@ final class PyroWaveExperimentRunner {
         let startDeadline = Date().addingTimeInterval(cfg.startupTimeoutSeconds)
         var stats: StreamStatsCollector?
         while Date() < startDeadline {
-            if streamState.isActive, let s = streamState.stats, let c = s.pyroWaveStatsProvider?(), c.decoded > 0 {
-                stats = s
-                break
+            if streamState.isActive, let s = streamState.stats {
+                if waitsForPyroWave, let c = s.pyroWaveStatsProvider?(), c.decoded > 0 { stats = s; break }
+                if !waitsForPyroWave, s.receivedCodec != nil { stats = s; break }
             }
             try? await Task.sleep(nanoseconds: 250_000_000)
         }
@@ -249,10 +276,16 @@ final class PyroWaveExperimentRunner {
                 break
             }
             result.fps.append(stats.current.measFps)
+            result.samples.append(Self.secondSample(stats.current))
         }
         result.seconds = Date().timeIntervalSince(t0)
         let picture = stats.receivedHdr.map { $0 ? "HDR (PQ)" : "SDR" } ?? "unknown"
-        result.profile = "\(stats.pyroWaveProfileLabel ?? "?"), picture \(picture)"
+        if stats.receivedCodec == .pyrowave {
+            result.profile = "\(stats.pyroWaveProfileLabel ?? "?"), picture \(picture)"
+        }
+        result.receivedCodec = stats.receivedCodec
+        result.receivedHdr = stats.receivedHdr
+        result.requestedFps = stats.requestedFps
         result.end = sample(stats: stats, udp: Self.udpStats())
         result.start.injectedDrops = 0
         result.end.injectedDrops = PyroWaveExperimentControl.injected - injectedBase
@@ -262,6 +295,19 @@ final class PyroWaveExperimentRunner {
         dismiss()
         try? await Task.sleep(nanoseconds: 4_000_000_000)   // let the host tear the session down
         return result
+    }
+
+    private static func secondSample(_ c: StreamStats) -> CodecSecondSample {
+        CodecSecondSample(
+            fps: c.measFps, bitrateMbps: c.measBitrateMbps, jitterMs: c.jitterMs,
+            decodeAvgMs: c.decodeAvgMs, decodeMaxMs: c.decodeMaxMs,
+            drawP99Ms: c.drawIntervalP99Ms, drawMaxMs: c.drawIntervalMaxMs, frameAgeMs: c.frameAgeMs,
+            repeatsPerSec: c.repeatedFramesPerSec, overwrittenPerSec: c.overwrittenPerSec,
+            lateDroppedPerSec: c.lateDroppedPerSec,
+            framesDecoded: c.framesDecoded, framesLost: c.framesLost, framesDropped: c.framesDropped,
+            packetsReceived: c.packetsReceived, packetsRecovered: c.packetsRecovered,
+            audioUnderruns: c.audioUnderruns, audioOverruns: c.audioOverruns, audioLoss: c.audioLoss,
+            audioState: c.audioState)
     }
 
     private func sample(stats: StreamStatsCollector, udp: (received: Int, fullSocketDrops: Int))

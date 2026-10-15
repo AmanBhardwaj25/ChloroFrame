@@ -25,13 +25,22 @@ nonisolated struct PyroWaveExperimentConfig: Codable, Equatable {
         /// Mean consecutive packets per loss event. 1 = independent drops; 16 or more imitates a
         /// Wi-Fi aggregate being lost.
         var burstLength: Int = 1
+        /// Codec setting for this phase ("h264", "h265", "av1", "pyrowave"); the stored value
+        /// comes back after the run. nil: leave it alone (the PyroWave experiments). A phase with
+        /// a codec is reported by CodecRegression.
+        var codec: String?
+        /// HDR setting for this phase, over the run-wide `hdr`. nil: leave it alone.
+        var hdr: Bool?
 
-        init(name: String, minutes: Double, partialDelivery: Bool, lossPercent: Double = 0, burstLength: Int = 1) {
+        init(name: String, minutes: Double, partialDelivery: Bool, lossPercent: Double = 0, burstLength: Int = 1,
+             codec: String? = nil, hdr: Bool? = nil) {
             self.name = name
             self.minutes = minutes
             self.partialDelivery = partialDelivery
             self.lossPercent = lossPercent
             self.burstLength = burstLength
+            self.codec = codec
+            self.hdr = hdr
         }
 
         // Synthesized Decodable ignores property defaults, so a hand written config would need
@@ -40,9 +49,11 @@ nonisolated struct PyroWaveExperimentConfig: Codable, Equatable {
             let c = try decoder.container(keyedBy: CodingKeys.self)
             name = try c.decode(String.self, forKey: .name)
             minutes = try c.decode(Double.self, forKey: .minutes)
-            partialDelivery = try c.decode(Bool.self, forKey: .partialDelivery)
+            partialDelivery = try c.decodeIfPresent(Bool.self, forKey: .partialDelivery) ?? true
             lossPercent = try c.decodeIfPresent(Double.self, forKey: .lossPercent) ?? 0
             burstLength = try c.decodeIfPresent(Int.self, forKey: .burstLength) ?? 1
+            codec = try c.decodeIfPresent(String.self, forKey: .codec)
+            hdr = try c.decodeIfPresent(Bool.self, forKey: .hdr)
         }
     }
 
@@ -267,6 +278,14 @@ nonisolated enum PyroWaveExperimentReport {
         var end: PyroWaveExperimentSample
         var failure: String?         // the phase did not produce a measurement
         var profile: String?         // "4:2:0 10-bit, picture HDR (PQ)" (D9)
+        // Codec phases (CodecRegression).
+        var codec: String?
+        var requestedHdr = false
+        var expectedHdr = false
+        var requestedFps = 0
+        var receivedCodec: VideoCodec?
+        var receivedHdr: Bool?
+        var samples: [CodecSecondSample] = []
     }
 
     private static func median(_ a: [Double]) -> Double {

@@ -9,6 +9,7 @@ import CoreMedia
 import CoreVideo
 import CryptoKit
 import Metal
+import QuartzCore
 
 // Manages all post-RTSP transport streams for an active session:
 //   - ENet control    (controlServerPort): session keepalive + input
@@ -262,7 +263,11 @@ final class StreamTransport {
             try PyroWaveDecoder(device: device, format: format, color: color)
         }.value
         decoder.stats = stats
+        // Review R1: a 10-bit stream holds its first frames until the host's HDR mode message
+        // says PQ or SDR (at most 250 ms), so an SDR host does not flash through the PQ path.
+        let colorGate = PyroWaveColorGate(waitForHost: tenBit)
         decoder.onFrameDecoded = { [weak self] frame, pts in
+            guard colorGate.allows(frame.color, now: CACurrentMediaTime()) else { return }
             self?.onPlanarFrame?(frame, pts)
         }
         // D9: the host says whether the 10-bit picture is PQ HDR or 10-bit SDR. An 8-bit stream
@@ -271,12 +276,14 @@ final class StreamTransport {
             enet.setHdrModeHandler { [weak decoder] enabled in
                 guard let decoder else { return }
                 let updated = PlanarColorParams.forEncoderCscMode(cscMode, bitDepth: 10, hdr: enabled)
-                guard updated != decoder.currentColor else { return }
-                decoder.setColor(updated)
+                colorGate.hostReported(updated)
                 #if DEBUG
                 DebugFileLog.write("[ChloroFrame][pyrowave] host HDR mode message enabled=\(enabled) "
-                                 + "-> matrix=\(updated.matrix) transfer=\(updated.transfer)")
+                                 + "-> matrix=\(updated.matrix) transfer=\(updated.transfer) "
+                                 + "changed=\(updated != decoder.currentColor) heldFrames=\(colorGate.heldFrames)")
                 #endif
+                guard updated != decoder.currentColor else { return }
+                decoder.setColor(updated)
             }
         }
         stats.pyroWaveProfileLabel = "\(format.chroma444 ? "4:4:4" : "4:2:0") \(format.bitDepth)-bit"
