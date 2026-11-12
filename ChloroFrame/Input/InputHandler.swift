@@ -265,7 +265,11 @@ final class InputHandler {
         var p = [UInt8]()
         p += be32(10)
         p += le32(magic)
-        p.append(0x01)                      // flags: key code is not normalized
+        // flags: 0 = key code is normalized to the US layout, which macToWin32 already does
+        // (it maps by physical position). Do not set SS_KBE_FLAG_NON_NORMALIZED (0x01): the
+        // Vibeshine VHF keyboard then maps via MapVirtualKey, which drops the extended bit, so
+        // arrows/Home/End/Ins/Del/PgUp/PgDn land on the numpad (Up types "8").
+        p.append(0x00)
         p += le16(UInt16(clamping: vk))     // VK code LE16
         p.append(modifiers)
         p += [0x00, 0x00]                   // padding

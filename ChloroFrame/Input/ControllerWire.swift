@@ -166,7 +166,7 @@ enum ControllerWire {
         var p = [UInt8]()
         p += be32(10)
         p += le32(down ? 0x0000_0003 : 0x0000_0004)
-        p.append(0x01)                                  // flags: key code not normalized
+        p.append(0x00)                                  // flags: normalized (see sendRawKey)
         p += le16(UInt16(clamping: vk))
         p.append(modifiers)
         p += [0x00, 0x00]
