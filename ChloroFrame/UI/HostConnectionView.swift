@@ -32,6 +32,56 @@ private enum PyroWaveLaunchChoice {
     case useHEVC       // blocker failed, or the user chose HEVC
 }
 
+// The in-flight connection for this sheet, so Cancel can tear down whatever is blocking
+// (RTSP request, ENet connect) and a late success cannot start a stream the user abandoned.
+private final class ConnectAttempt {
+    private(set) var isCancelled = false
+    var rtsp:      RTSPClient?
+    var transport: StreamTransport?
+
+    func cancel() {
+        isCancelled = true
+        rtsp?.cancel()
+        transport?.stop(reason: "connect cancelled")
+        rtsp = nil
+        transport = nil
+    }
+}
+
+// Spinner + message for the waiting phases, with a Cancel that is always available and a
+// note once the wait runs long. A new phase is a new view, so the stall timer restarts.
+private struct ConnectProgressView<Accessory: View>: View {
+    let message: String
+    let onCancel: () -> Void
+    @ViewBuilder let accessory: Accessory
+
+    private static var stallSeconds: Int { 15 }
+    @State private var stalled = false
+
+    var body: some View {
+        VStack(spacing: 16) {
+            ProgressView().controlSize(.large)
+            Text(message)
+                .foregroundStyle(.secondary)
+            accessory
+            if stalled {
+                Text("This is taking longer than usual. The host may not be responding.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+            }
+            Button("Cancel", action: onCancel)
+                .keyboardShortcut(.cancelAction)
+        }
+        .frame(width: 360, height: 220)
+        .padding()
+        .task {
+            try? await Task.sleep(for: .seconds(Self.stallSeconds))
+            stalled = true
+        }
+    }
+}
+
 // MARK: - Root view
 
 struct HostConnectionView: View {
@@ -60,6 +110,7 @@ struct HostConnectionView: View {
     // PyroWave UDP network test (D7b), "Test network" in the app list.
     @State private var networkTestResult: (outcome: PyroWaveNetworkTestOutcome, kbps: Int)?
     @State private var networkTesting = false
+    @State private var attempt = ConnectAttempt()
 
     init(host: Host) {
         self.host = host
@@ -123,14 +174,17 @@ struct HostConnectionView: View {
     // MARK: - Connecting
 
     private var connectingView: some View {
-        VStack(spacing: 16) {
-            ProgressView()
-                .controlSize(.large)
-            Text("Connecting to \(host.name)…")
-                .foregroundStyle(.secondary)
+        ConnectProgressView(message: "Connecting to \(host.name)…", onCancel: cancelAttempt) {
+            EmptyView()
         }
-        .frame(width: 360, height: 200)
-        .padding()
+    }
+
+    // Abandon whatever is in flight and close the sheet. Does not /cancel the host app: a
+    // stalled connect to a running game must not quit that game. The host drops the unused
+    // launch on its own after ping_timeout.
+    private func cancelAttempt() {
+        attempt.cancel()
+        dismiss()
     }
 
     // MARK: - Needs pairing
@@ -365,14 +419,9 @@ struct HostConnectionView: View {
     // MARK: - Launching
 
     private func launchingView(_ app: SunshineApp) -> some View {
-        VStack(spacing: 16) {
-            ProgressView().controlSize(.large)
-            Text("Launching \(app.title)…")
-                .foregroundStyle(.secondary)
+        ConnectProgressView(message: "Launching \(app.title)…", onCancel: cancelAttempt) {
             pyroWaveFallbackNotice
         }
-        .frame(width: 360, height: 200)
-        .padding()
     }
 
     // One line shown when the PyroWave audit sent this launch to HEVC (D5b), with the full report
@@ -396,14 +445,9 @@ struct HostConnectionView: View {
     // MARK: - RTSP negotiating
 
     private func negotiatingView(_ app: SunshineApp, result: SunshineHTTPClient.LaunchResult) -> some View {
-        VStack(spacing: 16) {
-            ProgressView().controlSize(.large)
-            Text("Connecting stream for \(app.title)…")
-                .foregroundStyle(.secondary)
+        ConnectProgressView(message: "Connecting stream for \(app.title)…", onCancel: cancelAttempt) {
             pyroWaveFallbackNotice
         }
-        .frame(width: 360, height: 200)
-        .padding()
     }
 
     // MARK: - Shared header component
@@ -541,6 +585,9 @@ struct HostConnectionView: View {
     }
 
     private func performLaunch(app: SunshineApp, serverInfo: ServerInfo, pyroWave: PyroWaveLaunchChoice) async {
+        // Held locally: the sheet may be dismissed (Cancel) while this task is suspended.
+        let attempt = self.attempt
+        guard !attempt.isCancelled else { return }
         phase = .launching(app)
         let base    = DisplayConfig.detect()
         let display = buildDisplayConfig(base: base)
@@ -617,12 +664,14 @@ struct HostConnectionView: View {
         }
         do {
             let result = try await client.launchApp(id: app.id, display: display, hdrMode: enableHdr)
+            guard !attempt.isCancelled else { return }
             // Show the negotiating UI immediately, then start RTSP in the same task.
             // Do NOT use a SwiftUI .task for this — the view scheduling delay (~2s) causes
             // Sunshine's RTSP session to time out before we send SETUP.
             phase = .negotiating(app, result)
-            await negotiate(app: app, result: result, display: streamDisplay, codec: codec, hdr: enableHdr, yuv444: use444, fallbackBitrateKbps: fallbackBitrate)
+            await negotiate(app: app, result: result, display: streamDisplay, codec: codec, hdr: enableHdr, yuv444: use444, fallbackBitrateKbps: fallbackBitrate, attempt: attempt)
         } catch {
+            guard !attempt.isCancelled else { return }
             #if DEBUG
             if isAppAlreadyRunning(error), PyroWaveExperimentRunner.shared.consumeRetry() {
                 await stopAndRetry(app: app, serverInfo: serverInfo)
@@ -647,7 +696,7 @@ struct HostConnectionView: View {
         await connect()
     }
 
-    private func negotiate(app: SunshineApp, result: SunshineHTTPClient.LaunchResult, display: DisplayConfig, codec: VideoCodec, hdr enableHdr: Bool, yuv444: Bool = false, fallbackBitrateKbps: Int? = nil) async {
+    private func negotiate(app: SunshineApp, result: SunshineHTTPClient.LaunchResult, display: DisplayConfig, codec: VideoCodec, hdr enableHdr: Bool, yuv444: Bool = false, fallbackBitrateKbps: Int? = nil, attempt: ConnectAttempt) async {
         guard let sessionURL = URL(string: result.sessionUrl) else {
             phase = .failed(RTSPError.badURL); return
         }
@@ -673,8 +722,11 @@ struct HostConnectionView: View {
         }
 
         let rtsp = RTSPClient()
+        attempt.rtsp = rtsp
         do {
             let stream = try await rtsp.negotiate(sessionURL: sessionURL, config: config)
+            attempt.rtsp = nil
+            guard !attempt.isCancelled else { return }
 
             guard let r = MetalVideoRenderer(isHdr: stream.dynamicRangeMode != 0) else {
                 AppLogger.shared.log("renderer creation failed", "metal", "renderer")
@@ -708,7 +760,11 @@ struct HostConnectionView: View {
                 }
             }
 
+            attempt.transport = t
             try await t.start()
+            // Cancel already stopped the transport; do not hand a dead stream to the window.
+            guard !attempt.isCancelled else { return }
+            attempt.transport = nil
 
             // Hand off to the main window and dismiss this sheet.
             let codecName: String
@@ -731,6 +787,9 @@ struct HostConnectionView: View {
             )
             dismiss()
         } catch {
+            attempt.rtsp = nil
+            attempt.transport = nil
+            guard !attempt.isCancelled else { return }
             phase = .failed(error)
         }
     }

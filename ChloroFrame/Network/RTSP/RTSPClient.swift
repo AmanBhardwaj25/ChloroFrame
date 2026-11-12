@@ -62,6 +62,7 @@ enum RTSPError: LocalizedError {
     case badStatus(Int, String)
     case badResponse(String)
     case closed
+    case cancelled
 
     var errorDescription: String? {
         switch self {
@@ -70,6 +71,7 @@ enum RTSPError: LocalizedError {
         case .badStatus(let c, let ctx):     return "RTSP \(c) during \(ctx)"
         case .badResponse(let m):            return "Malformed RTSP response: \(m)"
         case .closed:                        return "RTSP connection closed unexpectedly"
+        case .cancelled:                     return "Connection cancelled"
         }
     }
 }
@@ -103,6 +105,9 @@ final class RTSPClient {
     private var sessionId: String?
     private var serverHost = ""
     private var serverPort: UInt16 = 48010
+    // Set by cancel(). Checked before each request so a cancelled negotiation stops instead of
+    // opening the next connection.
+    private var cancelled  = false
 
     // MARK: - Public
 
@@ -288,6 +293,14 @@ final class RTSPClient {
         serverPort  = 48010
     }
 
+    /// Abandons an in-flight negotiate(): the pending connect, send or receive fails with
+    /// RTSPError.cancelled (or the connection's cancel error) and no further request is sent.
+    func cancel() {
+        cancelled = true
+        connection?.cancel()
+        connection = nil
+    }
+
     // MARK: - TCP connection
 
     private func connect(host: String, port: UInt16) async throws {
@@ -308,6 +321,10 @@ final class RTSPClient {
                 case .failed(let err):
                     conn?.stateUpdateHandler = nil
                     cont.resume(throwing: RTSPError.connectFailed(err.localizedDescription))
+                case .cancelled:
+                    // cancel() while the TCP connect was still pending (or stuck in .waiting).
+                    conn?.stateUpdateHandler = nil
+                    cont.resume(throwing: RTSPError.cancelled)
                 default:
                     break
                 }
@@ -326,6 +343,7 @@ final class RTSPClient {
 
     private func request(_ method: String, uri: String,
                           extra: [String: String], body: Data? = nil) async throws -> Response {
+        if cancelled { throw RTSPError.cancelled }
         // Apollo closes the TCP socket after every response; open a fresh connection each time.
         connection?.cancel()
         try await connect(host: serverHost, port: serverPort)

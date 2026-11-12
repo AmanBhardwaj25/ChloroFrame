@@ -45,6 +45,18 @@ private let ECMD_FLAG_ACKNOWLEDGE:   UInt8 = 0x80
 private let ENET_UNCONNECTED_PEER_ID: UInt16 = 0x0FFF
 private let ENET_HEADER_FLAG_SENT_TIME: UInt16 = 0x8000
 
+enum ENetError: LocalizedError {
+    case connectTimedOut
+    case cancelled
+
+    var errorDescription: String? {
+        switch self {
+        case .connectTimedOut: return "The host did not answer the control connection"
+        case .cancelled:       return "Connection cancelled"
+        }
+    }
+}
+
 // MARK: - ENetClient
 
 final class ENetClient {
@@ -76,8 +88,13 @@ final class ENetClient {
     private static let reliableRtoNanos:   UInt64 = 100_000_000   // resend if unacked for 100 ms
     private static let reliableMaxRetries: Int    = 100           // ~10 s unacked ⇒ peer is dead
 
-    // Pending connect continuation.
+    // Pending connect continuation. sendQueue-confined once the CONNECT is sent.
     private var connectCont: CheckedContinuation<Void, Error>?
+    // CONNECT is resent until VERIFY_CONNECT arrives, as real ENet does: a single dropped
+    // datagram otherwise leaves connect() waiting forever. The host ignores duplicates with the
+    // same connectID. Moonlight gives up after 10 s (CONTROL_STREAM_TIMEOUT_SEC).
+    private static let connectResendNanos: UInt64 = 500_000_000
+    private static let connectTimeoutNanos: UInt64 = 10_000_000_000
 
     // Keepalive ping task.
     private var pingTask: Task<Void, Never>?
@@ -135,6 +152,11 @@ final class ENetClient {
                     c?.stateUpdateHandler = nil
                     self?.state = .idle
                     cont.resume(throwing: e)
+                case .cancelled:
+                    // disconnect() before the socket came up (e.g. stuck in .waiting).
+                    c?.stateUpdateHandler = nil
+                    self?.state = .idle
+                    cont.resume(throwing: ENetError.cancelled)
                 default: break
                 }
             }
@@ -144,11 +166,32 @@ final class ENetClient {
 
         let connectPkt = buildConnect(connectData: connectData)
         try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
-            connectCont = cont
-            sendRaw(connectPkt)
+            sendQueue.async { [weak self] in
+                guard let self else { cont.resume(throwing: ENetError.cancelled); return }
+                self.connectCont = cont
+                self.sendRaw(connectPkt)
+                self.resendConnect(connectPkt, deadline: DispatchTime.now().uptimeNanoseconds + Self.connectTimeoutNanos)
+            }
         }
 
         pingTask = Task { [weak self] in await self?.pingLoop() }
+    }
+
+    // sendQueue only. Resends CONNECT until VERIFY_CONNECT clears connectCont, or fails the
+    // connect once the deadline passes.
+    private func resendConnect(_ pkt: Data, deadline: UInt64) {
+        sendQueue.asyncAfter(deadline: .now() + .nanoseconds(Int(Self.connectResendNanos))) { [weak self] in
+            guard let self, let cont = self.connectCont else { return }
+            if DispatchTime.now().uptimeNanoseconds >= deadline {
+                print("[ChloroFrame][enet] no VERIFY_CONNECT after \(Self.connectTimeoutNanos / 1_000_000_000) s, giving up")
+                self.connectCont = nil
+                self.state = .idle
+                cont.resume(throwing: ENetError.connectTimedOut)
+                return
+            }
+            self.sendRaw(pkt)
+            self.resendConnect(pkt, deadline: deadline)
+        }
     }
 
     /// Send a control-stream message over ENet.
@@ -183,6 +226,9 @@ final class ENetClient {
         sendQueue.sync {
             retransmitTimer?.cancel(); retransmitTimer = nil
             pendingReliable.removeAll()
+            // A connect still waiting for VERIFY_CONNECT (the user cancelled mid-connect).
+            connectCont?.resume(throwing: ENetError.cancelled)
+            connectCont = nil
             state  = .idle
             outgoingPeerID = ENET_UNCONNECTED_PEER_ID
             outSeq.removeAll()
