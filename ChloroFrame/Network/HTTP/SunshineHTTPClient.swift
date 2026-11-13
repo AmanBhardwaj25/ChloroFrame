@@ -440,7 +440,7 @@ final class SunshineHTTPClient: NSObject {
             "rikey":              rikey.hexString,
             "rikeyid":            String(rikeyid),
             "hdrMode":            hdrMode ? "1" : "0",
-        ])
+        ], requestTimeout: 30, once: true)  // 30 s: the session's resource cap; host answers when the app is up
         guard let sessionUrl = xmlValue(data, "sessionUrl0") else {
             let msg = xmlAttr(data, "status_message") ?? "no sessionUrl0"
             AppLogger.shared.log("FAILED — \(msg)", "HTTP", "launch")
@@ -458,7 +458,7 @@ final class SunshineHTTPClient: NSObject {
     /// from a stuck "an app is already running" state left by a session that never cleaned up).
     /// If no session is active the server returns an error — we ignore it.
     func cancelApp(id: Int) async {
-        _ = try? await getHTTPS("cancel", params: ["appid": String(id)])
+        _ = try? await getHTTPS("cancel", params: ["appid": String(id)], once: true)
         AppLogger.shared.log("appid=\(id) cancel sent", "HTTP", "cancel")
     }
 
@@ -517,7 +517,18 @@ final class SunshineHTTPClient: NSObject {
     // since a different address wouldn't fix a server-side rejection. `body` receives the
     // per-attempt timeout to apply to its request: short for a probe, the caller's full timeout
     // for the last (or only) candidate.
-    private func withAddressFallback<T>(_ body: (String, TimeInterval) async throws -> T) async throws -> T {
+    //
+    // `once`: the request changes host state (launch, cancel), so it must reach the host at most
+    // once. A timeout does not mean the host never got it: Vibeshine holds /launch open while it
+    // builds the virtual display (3.5-5.5 s measured), so the 3 s probe gave up, the request went
+    // to the secondary address (the same host), and the host refused it as busy while the first
+    // launch completed unanswered. Such a request goes only to the address that last answered,
+    // with the full timeout, and falls back only when no call has succeeded yet.
+    private func withAddressFallback<T>(once: Bool = false,
+                                        _ body: (String, TimeInterval) async throws -> T) async throws -> T {
+        if once, let addr = lastGoodAddress {
+            return try await body(addr, 0)
+        }
         var lastError: Error = SunshineError.unreachable
         let addrs = candidateAddresses
         for (idx, addr) in addrs.enumerated() {
@@ -570,9 +581,11 @@ final class SunshineHTTPClient: NSObject {
 
     // Post-pairing calls (applist, launch) go over HTTPS and require mTLS.
     // `requestTimeout` bounds the final candidate's request (nil keeps the session default).
-    private func getHTTPS(_ path: String, params: [String: String] = [:], requestTimeout: TimeInterval? = nil) async throws -> Data {
+    // `once` is for requests that change host state (see withAddressFallback).
+    private func getHTTPS(_ path: String, params: [String: String] = [:], requestTimeout: TimeInterval? = nil,
+                          once: Bool = false) async throws -> Data {
         if _cachedIdentity == nil { loadAndCacheIdentity() }
-        return try await withAddressFallback { addr, timeout in
+        return try await withAddressFallback(once: once) { addr, timeout in
             var comps        = URLComponents()
             comps.scheme     = "https"
             comps.host       = HostAddress.urlHost(addr)
